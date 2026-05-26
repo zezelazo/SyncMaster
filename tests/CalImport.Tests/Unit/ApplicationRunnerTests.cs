@@ -53,12 +53,9 @@ public sealed class ApplicationRunnerTests
         _ => _calendarTarget.Object,
         @"C:\exe");
 
-    private static ImportSettings MakeSettings(
-        string clientId = "abc-client-id",
-        string? defaultCalendarId = null)
+    private static ImportSettings MakeSettings(string? defaultCalendarId = null)
         => new ImportSettings
         {
-            ClientId          = clientId,
             DefaultCalendarId = defaultCalendarId,
             ReminderMinutes   = 30,
         };
@@ -120,22 +117,7 @@ public sealed class ApplicationRunnerTests
             .ReturnsAsync((IReadOnlyDictionary<string, ExistingEventLookup>)dict);
     }
 
-    // ─── 1. ValidateSettings ──────────────────────────────────────────────────
-
-    [Fact]
-    public void ValidateSettings_EmptyClientId_ExitsWithCode1()
-    {
-        _settingsRepo.Setup(r => r.LoadOrCreateDefault(It.IsAny<string>()))
-                     .Returns(MakeSettings(clientId: ""));
-
-        Action act = () => BuildSut().Run(new ParsedImportArguments());
-
-        var ex = act.Should().Throw<TerminatedException>().Which;
-        ex.Code.Should().Be(1);
-        _console.Verify(c => c.WriteError(It.Is<string>(s => s.Contains("'clientId' is empty"))), Times.Once);
-    }
-
-    // ─── 2. Config path explícito que no existe ───────────────────────────────
+    // ─── Config path explícito que no existe ──────────────────────────────────
 
     [Fact]
     public void LoadSettings_ExplicitConfigPathMissing_ExitsWithError()

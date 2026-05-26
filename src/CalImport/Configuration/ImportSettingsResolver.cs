@@ -6,35 +6,35 @@ public sealed class ImportSettingsResolver
 {
     private const string DefaultAuthority = "https://login.microsoftonline.com/consumers";
 
-    public string ResolveAuthority(ImportSettings settings)
+    public string ResolveAuthority(AppConfig config)
     {
-        if (settings == null) throw new ArgumentNullException(nameof(settings));
-        if (string.IsNullOrWhiteSpace(settings.Authority))
+        if (config == null) throw new ArgumentNullException(nameof(config));
+        if (string.IsNullOrWhiteSpace(config.Authority))
             return DefaultAuthority;
-        if (!Uri.TryCreate(settings.Authority, UriKind.Absolute, out _))
+        if (!Uri.TryCreate(config.Authority, UriKind.Absolute, out _))
             throw new SettingsValidationException(
-                $"'authority' in settings.json is not a valid absolute URI: '{settings.Authority}'. " +
+                $"'authority' in appsettings.json is not a valid absolute URI: '{config.Authority}'. " +
                 "Fix the value (for example 'https://login.microsoftonline.com/consumers') " +
                 "or remove the field to use the default.");
-        return settings.Authority;
+        return config.Authority;
+    }
+
+    public Guid ResolveExtendedPropertyGuid(AppConfig config)
+    {
+        if (config == null) throw new ArgumentNullException(nameof(config));
+        if (string.IsNullOrEmpty(config.ExtendedPropertyGuid))
+            return new Guid(AppConfig.DefaultExtendedPropertyGuid);
+        if (!Guid.TryParse(config.ExtendedPropertyGuid, out var g))
+            throw new SettingsValidationException(
+                $"'extendedPropertyGuid' in appsettings.json is not a valid GUID: '{config.ExtendedPropertyGuid}'. " +
+                "Fix the value or remove the field to use the default. " +
+                "WARNING: changing this GUID makes previously-imported events invisible to CalImport.");
+        return g;
     }
 
     public int ResolveReminderMinutes(ImportSettings settings)
     {
         if (settings == null) throw new ArgumentNullException(nameof(settings));
         return settings.ReminderMinutes < 0 ? 30 : settings.ReminderMinutes;
-    }
-
-    public Guid ResolveExtendedPropertyGuid(ImportSettings settings)
-    {
-        if (settings == null) throw new ArgumentNullException(nameof(settings));
-        if (string.IsNullOrEmpty(settings.ExtendedPropertyGuid))
-            return new Guid(ImportSettings.DefaultExtendedPropertyGuid);
-        if (!Guid.TryParse(settings.ExtendedPropertyGuid, out var g))
-            throw new SettingsValidationException(
-                $"'extendedPropertyGuid' in settings.json is not a valid GUID: '{settings.ExtendedPropertyGuid}'. " +
-                "Fix the value or remove the field to use the default. " +
-                "WARNING: changing this GUID makes previously-imported events invisible to CalImport.");
-        return g;
     }
 }

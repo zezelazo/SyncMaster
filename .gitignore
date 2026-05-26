@@ -13,7 +13,9 @@ TestResults/
 *.opencover.xml
 lcov.info
 
-# Runtime settings — may contain clientId / account email (PII). Generated next to the exe.
+# Deployment config (clientId, authority) and user settings (account email / PII).
+# Templates appsettings.example.json / settings.example.json are versioned instead.
+appsettings.json
 settings.json
 
 # MSAL token cache (normally under %LOCALAPPDATA%, never committed)

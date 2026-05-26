@@ -21,4 +21,12 @@
     <ProjectReference Include="..\SyncMaster.Core\SyncMaster.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Deployment config (clientId / authority / extendedPropertyGuid). Lives in the
+         project folder (gitignored, stable) and is copied next to the exe on every build,
+         so it survives clean/rebuild. appsettings.example.json is the versioned template.
+         User preferences (settings.json) are separate and generated at runtime. -->
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" Condition="Exists('appsettings.json')" />
+  </ItemGroup>
+
 </Project>

@@ -53,7 +53,6 @@ public sealed class ApplicationRunner
         if (args == null) throw new ArgumentNullException(nameof(args));
 
         var (settingsPath, settings) = LoadSettings(args);
-        ValidateSettings(settings);
 
         var sourcePath = ResolveSourcePath(args);
         var payload    = LoadPayload(sourcePath);
@@ -117,24 +116,6 @@ public sealed class ApplicationRunner
         }
 
         return (path, _settingsRepo.LoadOrCreateDefault(path));
-    }
-
-    private void ValidateSettings(ImportSettings settings)
-    {
-        if (string.IsNullOrWhiteSpace(settings.ClientId))
-        {
-            _console.WriteError("Error: 'clientId' is empty in settings.json.");
-            _console.WriteLine();
-            _console.WriteLine("Register a public-client app in portal.azure.com:");
-            _console.WriteLine("  1. Azure Active Directory > App registrations > New registration");
-            _console.WriteLine("  2. Supported account types: 'Personal Microsoft accounts only'");
-            _console.WriteLine("  3. Redirect URI: 'Public client/native (mobile & desktop)' → http://localhost");
-            _console.WriteLine("  4. API permissions: Microsoft Graph > Delegated > Calendars.ReadWrite, User.Read");
-            _console.WriteLine("  5. Authentication > Allow public client flows = Yes");
-            _console.WriteLine("  6. Copy the Application (client) ID into 'clientId' in settings.json");
-            _terminator.Exit(1);
-            throw new InvalidOperationException("Unreachable");
-        }
     }
 
     // ── Source path ───────────────────────────────────────────────────────
