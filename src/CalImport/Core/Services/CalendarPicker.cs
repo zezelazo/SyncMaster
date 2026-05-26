@@ -16,7 +16,7 @@ public sealed class CalendarPicker
         _terminator = terminator ?? throw new ArgumentNullException(nameof(terminator));
     }
 
-    public CalendarTargetInfo Choose(
+    public CalendarSelection Choose(
         ParsedImportArguments         args,
         ImportSettings                settings,
         IReadOnlyList<CalendarTargetInfo> calendars)
@@ -40,7 +40,7 @@ public sealed class CalendarPicker
                 _terminator.ExitWithError($"Calendar id '{args.CalendarId}' not found in the account.");
                 throw new InvalidOperationException("Unreachable");
             }
-            return match;
+            return CalendarSelection.Use(match);
         }
 
         if (!string.IsNullOrWhiteSpace(settings.DefaultCalendarId))
@@ -48,7 +48,7 @@ public sealed class CalendarPicker
             var match = calendars.FirstOrDefault(c =>
                 string.Equals(c.Id, settings.DefaultCalendarId, StringComparison.OrdinalIgnoreCase));
             if (match != null)
-                return match;
+                return CalendarSelection.Use(match);
 
             if (args.AutoMode)
             {
@@ -76,13 +76,13 @@ public sealed class CalendarPicker
         if (args.AutoMode)
         {
             var def = calendars.FirstOrDefault(c => c.IsDefault) ?? calendars[0];
-            return def;
+            return CalendarSelection.Use(def);
         }
 
         return PromptInteractive(calendars);
     }
 
-    private CalendarTargetInfo PromptInteractive(IReadOnlyList<CalendarTargetInfo> calendars)
+    private CalendarSelection PromptInteractive(IReadOnlyList<CalendarTargetInfo> calendars)
     {
         _console.WriteLine();
         _console.WriteLine("Available calendars:");
@@ -92,15 +92,33 @@ public sealed class CalendarPicker
             var marker = c.IsDefault ? " (default)" : "";
             _console.WriteLine($"  {i + 1,2}. {c.DisplayName}{marker}");
         }
+        _console.WriteLine("   N. Create a new calendar");
 
         _console.WriteLine();
-        _console.Write($"Your choice (1-{calendars.Count}): ");
+        _console.Write($"Your choice (1-{calendars.Count}, or N): ");
         var input = _console.ReadLine()?.Trim() ?? "";
 
+        if (input.Equals("n", StringComparison.OrdinalIgnoreCase))
+            return PromptNewCalendarName();
+
         if (int.TryParse(input, out int n) && n >= 1 && n <= calendars.Count)
-            return calendars[n - 1];
+            return CalendarSelection.Use(calendars[n - 1]);
 
         _terminator.ExitWithError("Invalid selection.");
         throw new InvalidOperationException("Unreachable");
+    }
+
+    private CalendarSelection PromptNewCalendarName()
+    {
+        _console.Write("New calendar name: ");
+        var name = _console.ReadLine()?.Trim() ?? "";
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            _terminator.ExitWithError("Calendar name is required.");
+            throw new InvalidOperationException("Unreachable");
+        }
+
+        return CalendarSelection.CreateNew(name);
     }
 }

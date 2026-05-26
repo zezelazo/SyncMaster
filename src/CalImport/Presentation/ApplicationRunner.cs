@@ -191,7 +191,15 @@ public sealed class ApplicationRunner
 
         _console.WriteLine("Listing calendars from your account...");
         var calendars = target.ListCalendarsAsync().GetAwaiter().GetResult();
-        return _calendarPicker.Choose(args, settings, calendars);
+        var selection = _calendarPicker.Choose(args, settings, calendars);
+
+        if (selection.IsCreateNew)
+        {
+            _console.WriteLine($"Creating new calendar '{selection.NewCalendarName}'...");
+            return target.CreateCalendarAsync(selection.NewCalendarName!).GetAwaiter().GetResult();
+        }
+
+        return selection.Existing!;
     }
 
     // ── Plan execution ────────────────────────────────────────────────────

@@ -50,7 +50,8 @@ public sealed class CalendarPickerTests
             new ImportSettings(),
             cals);
 
-        chosen.Id.Should().Be("b");
+        chosen.IsCreateNew.Should().BeFalse();
+        chosen.Existing!.Id.Should().Be("b");
     }
 
     [Fact]
@@ -74,7 +75,7 @@ public sealed class CalendarPickerTests
             new ImportSettings { DefaultCalendarId = "b" },
             cals);
 
-        chosen.Id.Should().Be("b");
+        chosen.Existing!.Id.Should().Be("b");
     }
 
     [Fact]
@@ -98,7 +99,7 @@ public sealed class CalendarPickerTests
             new ImportSettings(),
             cals);
 
-        chosen.Id.Should().Be("b");
+        chosen.Existing!.Id.Should().Be("b");
     }
 
     [Fact]
@@ -111,7 +112,7 @@ public sealed class CalendarPickerTests
             new ImportSettings(),
             cals);
 
-        chosen.Id.Should().Be("b");
+        chosen.Existing!.Id.Should().Be("b");
     }
 
     [Fact]
@@ -137,7 +138,7 @@ public sealed class CalendarPickerTests
             new ImportSettings { DefaultCalendarId = "missing" },
             cals);
 
-        chosen.Id.Should().Be("a");
+        chosen.Existing!.Id.Should().Be("a");
     }
 
     [Fact]
@@ -149,6 +150,44 @@ public sealed class CalendarPickerTests
             new ParsedImportArguments(),
             new ImportSettings { DefaultCalendarId = "missing" },
             cals);
+
+        act.Should().Throw<TerminatedException>();
+    }
+
+    // ── Create-new option ─────────────────────────────────────────────────
+
+    [Fact]
+    public void Interactive_ChooseN_PromptsNameAndReturnsCreateNew()
+    {
+        _console.SetupSequence(c => c.ReadLine()).Returns("N").Returns("Trabajo Importado");
+        var cals = Calendars(("a", "AAA", true), ("b", "BBB", false));
+
+        var chosen = BuildSut().Choose(new ParsedImportArguments(), new ImportSettings(), cals);
+
+        chosen.IsCreateNew.Should().BeTrue();
+        chosen.NewCalendarName.Should().Be("Trabajo Importado");
+        chosen.Existing.Should().BeNull();
+    }
+
+    [Fact]
+    public void Interactive_ChooseN_Lowercase_Works()
+    {
+        _console.SetupSequence(c => c.ReadLine()).Returns("n").Returns("MyCal");
+        var cals = Calendars(("a", "AAA", true));
+
+        var chosen = BuildSut().Choose(new ParsedImportArguments(), new ImportSettings(), cals);
+
+        chosen.IsCreateNew.Should().BeTrue();
+        chosen.NewCalendarName.Should().Be("MyCal");
+    }
+
+    [Fact]
+    public void Interactive_ChooseN_EmptyName_Terminates()
+    {
+        _console.SetupSequence(c => c.ReadLine()).Returns("N").Returns("   ");
+        var cals = Calendars(("a", "AAA", true));
+
+        Action act = () => BuildSut().Choose(new ParsedImportArguments(), new ImportSettings(), cals);
 
         act.Should().Throw<TerminatedException>();
     }
