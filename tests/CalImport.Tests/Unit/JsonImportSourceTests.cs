@@ -121,7 +121,9 @@ public sealed class JsonImportSourceTests
         var p = BuildSut().Load("x.json");
 
         var ev = p.Events[0];
-        ev.Id.Should().Be("abc-123");
+        // Id is the per-occurrence key derived from raw id + start, not the raw id itself.
+        ev.Id.Should().Be(SourceIdFactory.For("abc-123", ev.StartOffset));
+        ev.Id.Should().NotBe("abc-123");
         ev.Subject.Should().Be("Team Meeting");
         ev.OrganizerName.Should().Be("Alice");
         ev.OrganizerEmail.Should().Be("alice@x.com");
@@ -196,14 +198,29 @@ public sealed class JsonImportSourceTests
     }
 
     [Fact]
-    public void Load_DuplicateIds_Throws()
+    public void Load_DuplicateOccurrences_SameIdAndStart_Throws()
     {
-        var dup = SecondValidEventJson.Replace(@"""id"": ""xyz-999""", @"""id"": ""abc-123""");
-        Setup(WrapMany(ValidEventJson, dup));
+        // Same source id AND same start = the same occurrence listed twice (data error).
+        Setup(WrapMany(ValidEventJson, ValidEventJson));
 
         Action act = () => BuildSut().Load("x.json");
         act.Should().Throw<ImportSourceException>()
-           .WithMessage("*Duplicate event ids*abc-123*[0,1]*");
+           .WithMessage("*Duplicate occurrences*");
+    }
+
+    [Fact]
+    public void Load_RecurringOccurrences_SameIdDifferentStart_LoadsDistinctIds()
+    {
+        // Outlook shares one GlobalAppointmentID across every occurrence of a recurring
+        // series. Same raw id with different starts must load as distinct, unique events.
+        var occurrence2 = SecondValidEventJson.Replace(@"""id"": ""xyz-999""", @"""id"": ""abc-123""");
+        Setup(WrapMany(ValidEventJson, occurrence2));
+
+        var p = BuildSut().Load("x.json");
+
+        p.Events.Should().HaveCount(2);
+        p.Events[0].Id.Should().NotBeNullOrEmpty();
+        p.Events[0].Id.Should().NotBe(p.Events[1].Id);
     }
 
     [Fact]

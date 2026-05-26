@@ -110,15 +110,18 @@ public sealed class JsonImportSource : IImportSource
         var duplicates = groups.Where(kv => kv.Value.Count > 1).ToList();
         if (duplicates.Count == 0) return;
 
-        var sb = new StringBuilder("Duplicate event ids found in payload: ");
+        // After per-occurrence keying, a collision means the same occurrence (same source
+        // id AND same start) was listed more than once — a genuine data error.
+        var sb = new StringBuilder("Duplicate occurrences found (same source id and start): ");
         for (int i = 0; i < duplicates.Count; i++)
         {
-            if (i > 0) sb.Append(", ");
-            sb.Append('\'').Append(duplicates[i].Key).Append("' at indexes [")
-              .Append(string.Join(",", duplicates[i].Value))
-              .Append(']');
+            if (i > 0) sb.Append("; ");
+            var first = records[duplicates[i].Value[0]];
+            sb.Append('\'').Append(first.Subject).Append("' starting ")
+              .Append(first.StartOffset.ToString("o"))
+              .Append(" appears ").Append(duplicates[i].Value.Count).Append(" times");
         }
-        sb.Append(". Each event must have a unique id.");
+        sb.Append(". Each occurrence must be unique.");
         throw new ImportSourceException(sb.ToString());
     }
 
@@ -194,7 +197,10 @@ public sealed class JsonImportSource : IImportSource
 
         return new AppointmentRecord
         {
-            Id                       = id,
+            // Per-occurrence key: the raw id (a recurring series shares one across all
+            // occurrences) combined with the occurrence start, so each occurrence upserts
+            // as its own event while staying idempotent across runs.
+            Id                       = SourceIdFactory.For(id, startOffset),
             Start                    = startOffset.LocalDateTime,
             Duration                 = durationMinutes,
             IsAllDay                 = isAllDay,
