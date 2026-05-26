@@ -30,9 +30,10 @@
     <ProjectReference Include="..\SyncMaster.Core\SyncMaster.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <!-- The built web UI is served by WebHost over a loopback HttpListener. Ship it
-         next to the exe so the host can resolve it at runtime. -->
-    <Content Include="Assets\ui\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Bundle the canonical web UI (repo-root ui/) next to the exe so the embedded
+         WebView2 / loopback host can resolve it at runtime. Linked rather than copied
+         into the project so there is a single source of truth (no drift). -->
+    <Content Include="..\..\ui\**\*" Link="Assets\ui\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="12.0.3" />

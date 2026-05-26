@@ -69,6 +69,10 @@ body {
 }
 .titlebar__spacer { flex: 1; }
 
+/* In the native desktop shell the OS provides the window chrome, so the web UI's own
+   title bar (cosmetic mac dots, duplicate title, theme toggle) is hidden. */
+.native-shell .titlebar { display: none; }
+
 /* ---- Views ---- */
 .views {
   flex: 1;

@@ -11,6 +11,13 @@ import { icon, hydrateIcons } from './icons.js';
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
+// In the desktop shell the OS draws the window chrome (move/resize/close), so hide the
+// web UI's own cosmetic title bar (mac-style dots, duplicate title, theme toggle).
+// Detected by the WebView2 host bridge; the theme stays settable from Configuration.
+if (typeof window !== 'undefined' && window.chrome && window.chrome.webview) {
+  document.documentElement.classList.add('native-shell');
+}
+
 // ---------------- Native bridge (optional) ----------------
 // When SyncMaster runs inside the desktop host the UI is served over a loopback
 // HttpListener that exposes /__bridge/send (web->native) and /__bridge/poll
