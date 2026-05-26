@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -21,4 +22,13 @@ public interface ICalendarTarget
     Task UpdateEventAsync(string eventId, EventDraft draft, CancellationToken ct = default);
 
     Task DeleteEventAsync(string eventId, CancellationToken ct = default);
+
+    // Lists every event in the calendar whose window overlaps [fromUtc, toUtc] that
+    // carries the CalImport source-id extended property, returning its source id and
+    // Graph event id. Used to detect managed events that no longer appear in the payload.
+    Task<IReadOnlyList<ManagedEventRef>> ListManagedInWindowAsync(
+        string            calendarId,
+        DateTimeOffset    fromUtc,
+        DateTimeOffset    toUtc,
+        CancellationToken ct = default);
 }

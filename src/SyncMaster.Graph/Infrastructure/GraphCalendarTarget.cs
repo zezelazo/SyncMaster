@@ -189,6 +189,67 @@ public sealed class GraphCalendarTarget : ICalendarTarget
             $"me/events/{Uri.EscapeDataString(eventId)}", null, ct).ConfigureAwait(false);
     }
 
+    public async Task<IReadOnlyList<ManagedEventRef>> ListManagedInWindowAsync(
+        string calendarId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(calendarId)) throw new ArgumentException("calendarId required.", nameof(calendarId));
+
+        // calendarView expands recurrences and bounds the result to the window, so the
+        // managed-event sweep never enumerates the whole calendar.
+        var start = fromUtc.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
+        var end   = toUtc.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ",   CultureInfo.InvariantCulture);
+
+        var expand =
+            $"singleValueExtendedProperties($filter=id eq '{EscapeOData(_extendedPropertyId)}')";
+
+        var url =
+            $"me/calendars/{Uri.EscapeDataString(calendarId)}/calendarView" +
+            $"?startDateTime={Uri.EscapeDataString(start)}" +
+            $"&endDateTime={Uri.EscapeDataString(end)}" +
+            $"&$select=id" +
+            $"&$expand={Uri.EscapeDataString(expand)}" +
+            $"&$top=50";
+
+        var result = new List<ManagedEventRef>();
+
+        while (!string.IsNullOrEmpty(url))
+        {
+            var json = await SendJsonAsync(HttpMethod.Get, url, null, ct).ConfigureAwait(false);
+            var arr  = json["value"] as JArray ?? new JArray();
+
+            foreach (var ev in arr)
+            {
+                var eventId = ev["id"]?.Value<string>() ?? "";
+                if (eventId.Length == 0) continue;
+
+                var props    = ev["singleValueExtendedProperties"] as JArray;
+                var sourceId = "";
+                if (props != null)
+                {
+                    foreach (var p in props)
+                    {
+                        var value = p["value"]?.Value<string>() ?? "";
+                        if (value.Length > 0)
+                        {
+                            sourceId = value;
+                            break;
+                        }
+                    }
+                }
+
+                if (sourceId.Length == 0) continue;
+
+                result.Add(new ManagedEventRef { SourceId = sourceId, EventId = eventId });
+            }
+
+            // The absolute @odata.nextLink works through SendJsonAsync because an absolute
+            // request URI overrides the HttpClient BaseAddress.
+            url = json["@odata.nextLink"]?.Value<string>() ?? "";
+        }
+
+        return result;
+    }
+
     private JObject BuildEventJson(EventDraft draft)
     {
         string startDateTime, endDateTime, timeZone;
