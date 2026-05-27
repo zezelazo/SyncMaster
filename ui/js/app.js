@@ -894,7 +894,6 @@ function wireTitlebar() {
   bind('wcClose', 'windowClose');
   bind('wcMin', 'windowMinimize');
   bind('wcMax', 'windowToggleMaximize');
-  bind('wcPin', 'windowToggleMaximize'); // no dedicated host verb for pin
   bind('tlClose', 'windowClose');
   bind('tlMin', 'windowMinimize');
   bind('tlMax', 'windowToggleMaximize');
