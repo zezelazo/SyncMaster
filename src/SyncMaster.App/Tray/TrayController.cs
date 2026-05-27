@@ -1,6 +1,7 @@
 using System;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Threading;
 using SyncMaster.App.State;
 using SyncMaster.App.Windows;
 
@@ -52,12 +53,6 @@ public sealed class TrayController : IDisposable
         _pauseItem = new NativeMenuItem(PauseItemText());
         _pauseItem.Click += (_, _) => TogglePause();
 
-        var configItem = new NativeMenuItem("Configuration…");
-        configItem.Click += (_, _) => OpenWindow();
-
-        var webItem = new NativeMenuItem("Open web panel");
-        webItem.Click += (_, _) => OpenWebPanelRequested?.Invoke();
-
         var quitItem = new NativeMenuItem("Quit");
         quitItem.Click += (_, _) => _desktop.Shutdown();
 
@@ -70,8 +65,6 @@ public sealed class TrayController : IDisposable
                 openItem,
                 syncItem,
                 _pauseItem,
-                configItem,
-                webItem,
                 new NativeMenuItemSeparator(),
                 quitItem,
             },
@@ -104,9 +97,15 @@ public sealed class TrayController : IDisposable
 
     private void OpenWindow()
     {
-        _window ??= _windowFactory();
-        _window.Show();
-        _window.Activate();
+        // Defer onto the dispatcher: creating/showing the window (which mounts the native
+        // WebView2 control) directly inside the tray icon's Win32 callback re-enters the
+        // message pump and crashes the process (0xc000041d). Posting runs it on a clean turn.
+        Dispatcher.UIThread.Post(() =>
+        {
+            _window ??= _windowFactory();
+            _window.Show();
+            _window.Activate();
+        });
     }
 
     private void TogglePause()
