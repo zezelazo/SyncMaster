@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
@@ -89,31 +90,34 @@ public partial class App : Application
         if (_webHost == null)
             return;
 
+        // Build the live engine if it's configured; otherwise fall back to a set of actions
+        // that still let the UI work (status, saving the config, window controls) without
+        // hanging. The bridge is ALWAYS created so the window chrome and requests respond.
+        IEngineActions actions;
         try
         {
             _engineHost = EngineHost.Create();
+            actions = _engineHost.Actions;
         }
         catch (SettingsValidationException)
         {
-            // Required serverBaseUrl not set yet — leave the engine unwired so the user
-            // can configure it from the panel.
-            return;
+            actions = MakeUnconfiguredActions();
         }
         catch (SettingsLoadException)
         {
-            // settings.json exists but is corrupt — same handling.
-            return;
+            actions = MakeUnconfiguredActions();
         }
 
         var transport = new WebViewBridgeTransport((IBridgeTransport)_webHost);
-        _bridge = new UiBridge(transport, _engineHost.Actions, () => _mainWindow);
+        _bridge = new UiBridge(transport, actions, () => _mainWindow);
 
-        // Tray "Sync now" / "Pause" route through the engine too.
+        // Auto-sync (the background loop + tray sync/pause) only runs once configured.
+        if (_engineHost == null)
+            return;
+
         _tray!.SyncNowRequested += () => _ = SafeSyncNow();
         _tray!.PauseToggled += paused => _ = _engineHost.Actions.SetPausedAsync(paused, _shutdown.Token);
 
-        // Drive a sync loop in the background; each cycle records its result, pushes the
-        // status to the web layer, and updates the tray icon.
         var cycle = new StatusPushingCycle(
             _engineHost.SyncCycle,
             _engineHost.Actions,
@@ -122,7 +126,24 @@ public partial class App : Application
 
         var interval = TimeSpan.FromMinutes(_engineHost.Settings.IntervalMinutes);
         var loop = new SyncLoop(cycle, interval);
-        _ = Task.Run(() => loop.RunAsync(_shutdown.Token));
+
+        // Delay the first cycle so the heavy Outlook COM read + push does not compete with
+        // app/window startup (it would otherwise spike CPU/IO the moment the app opens).
+        _ = Task.Run(async () =>
+        {
+            try { await Task.Delay(TimeSpan.FromSeconds(5), _shutdown.Token); }
+            catch (OperationCanceledException) { return; }
+            await loop.RunAsync(_shutdown.Token);
+        });
+    }
+
+    private static UnconfiguredEngineActions MakeUnconfiguredActions()
+    {
+        var exeDir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location)
+                     ?? Directory.GetCurrentDirectory();
+        var settingsPath = Path.Combine(exeDir, "settings.json");
+        var repo = new SettingsRepository<AppSettings>(new PhysicalFileSystem());
+        return new UnconfiguredEngineActions(repo, settingsPath);
     }
 
     private async Task SafeSyncNow()

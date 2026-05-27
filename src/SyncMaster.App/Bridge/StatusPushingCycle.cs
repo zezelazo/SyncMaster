@@ -45,6 +45,12 @@ public sealed class StatusPushingCycle : ISyncCycle
         {
             throw;
         }
+        catch (Exception ex)
+        {
+            // Never let a cycle failure skip the status update — record it and publish so
+            // the UI/tray reflect the error instead of showing a stale "last sync".
+            result = new SyncResult { Skipped = true, SkipReason = $"Sync failed: {ex.Message}" };
+        }
 
         _actions.RecordResult(result);
         await PublishAsync(ct);

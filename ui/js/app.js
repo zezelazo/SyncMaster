@@ -113,7 +113,7 @@ const Bridge = (() => {
     }
   }
 
-  function call(action, payload) {
+  function call(action, payload, timeoutMs) {
     if (!available) return Promise.reject(new Error('no bridge'));
     const correlationId = newId();
     return new Promise((resolve, reject) => {
@@ -121,7 +121,7 @@ const Bridge = (() => {
       send({ action, correlationId, payload: payload == null ? null : String(payload) });
       setTimeout(() => {
         if (pending.has(correlationId)) { pending.delete(correlationId); reject(new Error('bridge timeout')); }
-      }, 120000);
+      }, timeoutMs || 60000);
     });
   }
 
@@ -729,7 +729,7 @@ function renderPairing(root) {
       el('div', { class: 'pair-title', text: 'Name this device' }),
       el('div', { class: 'pair-sub', text: 'So you can recognise it from other devices in your account.' }),
       nameInput,
-      el('button', { class: 'btn btn--primary', style: 'align-self:stretch', onclick: () => { if (Bridge.available) Bridge.call('pair').catch(() => {}); pairing.step = 1; rerender(); } },
+      el('button', { class: 'btn btn--primary', style: 'align-self:stretch', onclick: () => { if (Bridge.available) Bridge.call('pair', null, 210000).catch(() => {}); pairing.step = 1; rerender(); } },
         el('span', { text: 'Continue' }), iconEl('arrowright', 14, 1.8))));
     clearTimeout(pairing.timer);
   } else if (pairing.step === 1) {
@@ -764,11 +764,22 @@ let syncTimer = null;
 function runSync() {
   if (state.sync === 'syncing' || state.sync === 'offline' || state.sync === 'unpaired') return;
 
-  // In the native shell ask the host to run a real cycle and reflect its result.
+  // Native shell: run a REAL cycle and reflect ONLY its result — no mock animation, so the
+  // UI can never show a fake "complete" that disagrees with what actually happened.
   if (Bridge.available) {
-    Bridge.call('syncNow').then(() => Bridge.call('getStatus')).then((s) => applyNativeStatus(s)).catch(() => {});
+    state.sync = 'syncing';
+    state.progress = { done: 0, total: 0 };
+    setAurora('syncing');
+    announce('Sync started');
+    rerender();
+    Bridge.call('syncNow')
+      .then(() => Bridge.call('getStatus'))
+      .then((s) => applyNativeStatus(s))
+      .catch(() => { state.sync = 'error'; setAurora('error'); announce('Sync failed.'); rerender(); });
+    return;
   }
 
+  // Standalone / demo (no host): the mock progress animation.
   state.sync = 'syncing';
   state.progress = { done: 0, total: 20 };
   setAurora('syncing');
@@ -799,6 +810,7 @@ function applyNativeStatus(s) {
   else if (s.status === 'Error') state.sync = 'error';
   else if (s.status === 'Offline') state.sync = 'offline';
   else if (s.status === 'Paused') state.sync = 'paused';
+  else if (s.status === 'Syncing') state.sync = 'syncing';
   else state.sync = 'ok';
   const tag = $('#pausedTag'); if (tag) tag.hidden = state.sync !== 'paused';
   rerender();
@@ -905,16 +917,20 @@ function wireTitlebar() {
 }
 
 // ---------------- Launch splash ----------------
-function playLaunch() {
+let launchDismissed = false;
+function dismissLaunch() {
+  if (launchDismissed) return;
+  launchDismissed = true;
   const launch = $('#launch');
   if (!launch) return;
+  launch.classList.add('is-out');
+  launch.addEventListener('animationend', () => { launch.hidden = true; }, { once: true });
+  setTimeout(() => { launch.hidden = true; }, 800); // safety in case animationend never fires
+}
+function playLaunch() {
   const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const hold = reduce ? 800 : 1800;
-  setTimeout(() => {
-    launch.classList.add('is-out');
-    launch.addEventListener('animationend', () => { launch.hidden = true; }, { once: true });
-    setTimeout(() => { launch.hidden = true; }, 800); // safety in case animationend never fires
-  }, hold);
+  // Hard cap so the splash always clears, even with no bridge or a slow host.
+  setTimeout(dismissLaunch, reduce ? 600 : 1400);
 }
 
 // ---------------- Boot ----------------
@@ -927,7 +943,12 @@ function boot() {
   if (Bridge.available) {
     Bridge.start();
     Bridge.onStatus((s) => applyNativeStatus(s));
-    Bridge.call('getStatus').then((s) => applyNativeStatus(s)).catch(() => {});
+    // Dismiss the splash shortly after the first status settles (with a small floor) so the
+    // app feels instant when the host responds quickly, instead of a fixed long hold.
+    Bridge.call('getStatus')
+      .then((s) => applyNativeStatus(s))
+      .catch(() => {})
+      .finally(() => setTimeout(dismissLaunch, 450));
   }
 
   rerender();
