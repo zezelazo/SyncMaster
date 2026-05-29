@@ -21,6 +21,34 @@ public static class PairEndpoints
             return Results.Ok(infos);
         }).RequireAuthorization();
 
+        app.MapDelete("/api/accounts/{accountRef}", async (
+            string accountRef,
+            IConnectedAccountStore accounts,
+            ISyncPairStore pairs,
+            CancellationToken ct) =>
+        {
+            // Disable any pair referencing this account on either side so a stale pair never
+            // tries to sync against a forgotten account. Dedupe ids appearing on both sides.
+            var byDest = await pairs.ListByDestinationAccountAsync(accountRef, ct);
+            var bySrc = await pairs.ListBySourceAccountAsync(accountRef, ct);
+
+            var affected = byDest.Concat(bySrc)
+                .GroupBy(p => p.Id, StringComparer.Ordinal)
+                .Select(g => g.First())
+                .ToList();
+
+            foreach (var pair in affected)
+            {
+                if (string.Equals(pair.State, "disabled", StringComparison.Ordinal))
+                    continue;
+                await pairs.UpdateAsync(pair with { State = "disabled" }, ct);
+            }
+
+            await accounts.RemoveAsync(accountRef, ct);
+
+            return Results.Ok(new { affectedPairIds = affected.Select(p => p.Id).ToList() });
+        }).RequireAuthorization();
+
         app.MapGet("/api/accounts/{accountRef}/calendars", async (
             string accountRef, ProviderRegistry registry) =>
         {
