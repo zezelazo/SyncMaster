@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.AspNetCore.Authentication;
 
 namespace ZyncMaster.Server;
 
@@ -8,15 +9,22 @@ public static class PairApprovalEndpoints
     {
         ArgumentNullException.ThrowIfNull(app);
 
-        // Browser-facing approval page. Session-gated on a connected Microsoft account:
-        // without one we cannot sync anything, so send the user through /connect first and
-        // return them here afterwards. This page is NOT api-key protected — it is reached
-        // from a human's browser, the api key lives only on the paired device.
-        app.MapGet("/pair", async (HttpContext context, IDeviceStore devices, IConnectedAccountStore accounts) =>
+        // Browser-facing approval page. Gated on a SIGNED-IN user: approval binds the new
+        // device to the approver, so we need to know who they are. We keep the route
+        // anonymous at the scheme level (so it can issue a friendly redirect instead of a
+        // bare 401) and check authentication inside the handler — an unauthenticated visitor
+        // is sent through /connect first and returned here afterwards. This page is NOT
+        // api-key protected — it is reached from a human's browser; the api key lives only
+        // on the paired device.
+        app.MapGet("/pair", async (HttpContext context, IDeviceStore devices) =>
         {
             var code = context.Request.Query["code"].ToString();
 
-            if (!await accounts.HasAnyAsync(context.RequestAborted))
+            // The Cookie scheme is not the default (ApiKey is), so it does not run
+            // automatically on this anonymous route. Authenticate it explicitly to detect
+            // a signed-in browser session.
+            var auth = await context.AuthenticateAsync(AuthSchemes.Cookie);
+            if (!auth.Succeeded || auth.Principal?.Identity?.IsAuthenticated != true)
             {
                 var returnTo = "/pair" + (string.IsNullOrEmpty(code)
                     ? ""

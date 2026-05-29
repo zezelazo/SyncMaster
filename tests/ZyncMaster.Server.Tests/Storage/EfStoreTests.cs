@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using FluentAssertions;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.EntityFrameworkCore;
 using Xunit;
 
 namespace ZyncMaster.Server.Tests.Storage;
@@ -120,6 +121,42 @@ public class EfDeviceStoreTests
 
         await store.RemovePendingAsync("pair-1");
         (await store.GetPendingAsync("pair-1")).Should().BeNull();
+    }
+
+    private sealed class MutableCurrentUser : ICurrentUserAccessor
+    {
+        public string UserId { get; set; } = DefaultCurrentUserAccessor.DefaultUserId;
+    }
+
+    [Fact]
+    public async Task Pending_is_global_not_user_scoped()
+    {
+        // A pending pairing created by the anonymous device (ambient "default" user) must be
+        // visible to a DIFFERENT signed-in user at approval time — the row is not scoped to
+        // whoever happened to create it. Save with the "default" actor, then read/update/
+        // remove with a real signed-in user via the same store.
+        using var h = new EfStoreTestHarness();
+        var currentUser = new MutableCurrentUser();
+        var store = new EfDeviceStore(h.Factory, currentUser);
+
+        currentUser.UserId = DefaultCurrentUserAccessor.DefaultUserId;
+        await store.SavePendingAsync(SamplePending("pair-global", "GLOB01"));
+
+        currentUser.UserId = "signed-in-user";
+        (await store.GetPendingByCodeAsync("GLOB01"))!.PairingId.Should().Be("pair-global");
+        (await store.GetPendingAsync("pair-global"))!.Code.Should().Be("GLOB01");
+
+        await store.UpdatePendingAsync(SamplePending("pair-global", "GLOB01") with { Approved = true });
+        (await store.GetPendingAsync("pair-global"))!.Approved.Should().BeTrue();
+
+        await store.RemovePendingAsync("pair-global");
+        (await store.GetPendingAsync("pair-global")).Should().BeNull();
+
+        // And the row is persisted without a forced user id.
+        await store.SavePendingAsync(SamplePending("pair-noscope", "GLOB02"));
+        await using var db = h.NewContext();
+        var row = await db.PendingPairings.AsNoTracking().SingleAsync(p => p.PairingId == "pair-noscope");
+        row.UserId.Should().BeNull();
     }
 }
 

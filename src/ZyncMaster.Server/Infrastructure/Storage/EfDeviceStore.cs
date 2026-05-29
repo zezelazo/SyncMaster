@@ -3,9 +3,14 @@ using ZyncMaster.Server.Data;
 
 namespace ZyncMaster.Server;
 
-// EF-backed device + pending-pairing store. Every query is filtered by the current
-// user (the "default" stub for now). Creates a fresh DbContext per operation through
-// the factory so it can be shared by the singleton composition root and background work
+// EF-backed device + pending-pairing store. Device queries are filtered by the current
+// user. Pending-pairing rows are GLOBAL (not user-scoped): a pairing is created by an
+// anonymous device (no cookie, no api key — the ambient "default" user) via
+// /api/pair/start and later claimed by the real signed-in user when they approve it in
+// the browser. Scoping pending lookups by user would make the approver (a different
+// actor) unable to find the row, so pending codes/pairingIds are looked up globally —
+// they are random and short-lived. Creates a fresh DbContext per operation through the
+// factory so it can be shared by the singleton composition root and background work
 // without tripping over the scoped DbContext lifetime.
 public sealed class EfDeviceStore : IDeviceStore
 {
@@ -83,7 +88,7 @@ public sealed class EfDeviceStore : IDeviceStore
         ArgumentNullException.ThrowIfNull(pairingId);
         await using var db = await _factory.CreateDbContextAsync(ct);
         var row = await db.PendingPairings.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.UserId == _currentUser.UserId && p.PairingId == pairingId, ct);
+            .FirstOrDefaultAsync(p => p.PairingId == pairingId, ct);
         return row is null ? null : ToDomain(row);
     }
 
@@ -92,7 +97,7 @@ public sealed class EfDeviceStore : IDeviceStore
         ArgumentNullException.ThrowIfNull(code);
         await using var db = await _factory.CreateDbContextAsync(ct);
         var row = await db.PendingPairings.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.UserId == _currentUser.UserId && p.Code == code, ct);
+            .FirstOrDefaultAsync(p => p.Code == code, ct);
         return row is null ? null : ToDomain(row);
     }
 
@@ -101,7 +106,7 @@ public sealed class EfDeviceStore : IDeviceStore
         ArgumentNullException.ThrowIfNull(pairing);
         await using var db = await _factory.CreateDbContextAsync(ct);
         var row = await db.PendingPairings
-            .FirstOrDefaultAsync(p => p.UserId == _currentUser.UserId && p.PairingId == pairing.PairingId, ct);
+            .FirstOrDefaultAsync(p => p.PairingId == pairing.PairingId, ct);
         if (row is null)
             return;
         row.DeviceName = pairing.DeviceName;
@@ -118,7 +123,7 @@ public sealed class EfDeviceStore : IDeviceStore
         ArgumentNullException.ThrowIfNull(pairingId);
         await using var db = await _factory.CreateDbContextAsync(ct);
         await db.PendingPairings
-            .Where(p => p.UserId == _currentUser.UserId && p.PairingId == pairingId)
+            .Where(p => p.PairingId == pairingId)
             .ExecuteDeleteAsync(ct);
     }
 
@@ -148,10 +153,12 @@ public sealed class EfDeviceStore : IDeviceStore
         LastSeenUtc = r.LastSeenUtc,
     };
 
-    private PendingPairingRow ToRow(PendingPairing p) => new()
+    // Pending pairings are global, not user-scoped: the row is created by an anonymous
+    // device and claimed by a user at approval. Leave UserId unset at save time.
+    private static PendingPairingRow ToRow(PendingPairing p) => new()
     {
         PairingId = p.PairingId,
-        UserId = _currentUser.UserId,
+        UserId = null,
         DeviceName = p.DeviceName,
         Code = p.Code,
         Approved = p.Approved,

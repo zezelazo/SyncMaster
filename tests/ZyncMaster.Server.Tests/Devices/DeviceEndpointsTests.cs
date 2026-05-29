@@ -9,6 +9,11 @@ using Xunit;
 
 namespace ZyncMaster.Server.Tests.Devices;
 
+// NOTE: /api/devices/approve is cookie-gated (it binds the new device to the signed-in
+// approver). Tests that exercise approve therefore sign in first; the cross-actor flow
+// (anonymous start/complete + cookie-authenticated approve) lives in
+// PairApprovalEndpointsTests.
+
 public class DeviceEndpointsTests : IClassFixture<ServerTestFactory>
 {
     private readonly ServerTestFactory _factory;
@@ -41,24 +46,26 @@ public class DeviceEndpointsTests : IClassFixture<ServerTestFactory>
     [Fact]
     public async Task Full_happy_path_start_approve_complete_and_list()
     {
-        var factory = _factory.WithWebHostBuilder(_ => { });
-        var client = factory.CreateClient();
+        var fake = new CookieAuthHelper.FakeIdentityTokenService();
+        var factory = new ServerTestFactory().WithFakeIdentity(fake);
 
-        // start
-        var startResp = await client.PostAsJsonAsync("/api/pair/start", new { name = "Laptop" });
+        // The unpaired device starts pairing anonymously (no cookie, no api key).
+        var deviceClient = factory.CreateClient();
+        var startResp = await deviceClient.PostAsJsonAsync("/api/pair/start", new { name = "Laptop" });
         startResp.StatusCode.Should().Be(HttpStatusCode.OK);
         using var startDoc = JsonDocument.Parse(await startResp.Content.ReadAsStringAsync());
         var pairingId = startDoc.RootElement.GetProperty("pairingId").GetString();
         var code = startDoc.RootElement.GetProperty("code").GetString();
 
-        // approve
-        var approveResp = await client.PostAsJsonAsync("/api/devices/approve", new { code });
+        // The human approves from a signed-in browser (cookie).
+        var browser = await CookieAuthHelper.SignInAsync(factory);
+        var approveResp = await browser.PostAsJsonAsync("/api/devices/approve", new { code });
         approveResp.StatusCode.Should().Be(HttpStatusCode.OK);
         using var approveDoc = JsonDocument.Parse(await approveResp.Content.ReadAsStringAsync());
         approveDoc.RootElement.GetProperty("approved").GetBoolean().Should().BeTrue();
 
-        // complete
-        var completeResp = await client.PostAsJsonAsync("/api/pair/complete", new { pairingId });
+        // The device completes pairing anonymously and gets the one-time api key.
+        var completeResp = await deviceClient.PostAsJsonAsync("/api/pair/complete", new { pairingId });
         completeResp.StatusCode.Should().Be(HttpStatusCode.OK);
         using var completeDoc = JsonDocument.Parse(await completeResp.Content.ReadAsStringAsync());
         completeDoc.RootElement.GetProperty("approved").GetBoolean().Should().BeTrue();
@@ -76,9 +83,21 @@ public class DeviceEndpointsTests : IClassFixture<ServerTestFactory>
     }
 
     [Fact]
-    public async Task Approve_unknown_code_returns_200_with_approved_false()
+    public async Task Approve_without_cookie_returns_401()
     {
         var client = _factory.WithWebHostBuilder(_ => { }).CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/devices/approve", new { code = "ZZZZZZ" });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Approve_unknown_code_with_cookie_returns_200_with_approved_false()
+    {
+        var fake = new CookieAuthHelper.FakeIdentityTokenService();
+        var factory = new ServerTestFactory().WithFakeIdentity(fake);
+        var client = await CookieAuthHelper.SignInAsync(factory);
 
         var resp = await client.PostAsJsonAsync("/api/devices/approve", new { code = "ZZZZZZ" });
 

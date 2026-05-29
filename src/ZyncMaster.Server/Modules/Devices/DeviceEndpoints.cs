@@ -36,7 +36,7 @@ public static class DeviceEndpoints
 
             var approved = await service.ApproveAsync(req.Code);
             return Results.Ok(new { approved });
-        });
+        }).RequireCookie();
 
         app.MapGet("/api/devices", async (IDeviceStore store) =>
         {
