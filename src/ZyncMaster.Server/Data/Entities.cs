@@ -63,9 +63,11 @@ public sealed class SyncPairRow
 
 public sealed class SyncStateRow
 {
-    // Composite-free surrogate key (UserId|DeviceId) keeps the row per-user-per-device
-    // unique while DeviceId carries its own unique index for the by-device lookups.
+    // Surrogate key (UserId|DeviceId). The uniqueness guarantee is the composite
+    // (UserId, DeviceId) index — the same physical device can now hold a state row under
+    // each user it is paired with, which a DeviceId-only unique index wrongly forbade.
     public string Id { get; set; } = "";
+    public string UserId { get; set; } = "";
     public string DeviceId { get; set; } = "";
     public DateTimeOffset LastSyncUtc { get; set; }
     public int LastCreated { get; set; }

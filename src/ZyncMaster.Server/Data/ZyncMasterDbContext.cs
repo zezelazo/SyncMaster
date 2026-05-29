@@ -104,8 +104,9 @@ public sealed class ZyncMasterDbContext : DbContext, IDataProtectionKeyContext
             e.ToTable("SyncStates");
             e.HasKey(x => x.Id);
             e.Property(x => x.Id).HasMaxLength(128);
+            e.Property(x => x.UserId).HasMaxLength(64).IsRequired();
             e.Property(x => x.DeviceId).HasMaxLength(64).IsRequired();
-            e.HasIndex(x => x.DeviceId).IsUnique();
+            e.HasIndex(x => new { x.UserId, x.DeviceId }).IsUnique();
         });
     }
 }

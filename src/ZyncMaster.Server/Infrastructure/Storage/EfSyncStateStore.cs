@@ -25,7 +25,7 @@ public sealed class EfSyncStateStore : ISyncStateStore
         var row = await db.SyncStates.FirstOrDefaultAsync(s => s.Id == id, ct);
         if (row is null)
         {
-            row = new SyncStateRow { Id = id, DeviceId = state.DeviceId };
+            row = new SyncStateRow { Id = id, UserId = _currentUser.UserId, DeviceId = state.DeviceId };
             db.SyncStates.Add(row);
         }
         row.LastSyncUtc = state.LastSyncUtc;
