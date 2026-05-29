@@ -60,6 +60,7 @@ app.MapConnectEndpoints();
 app.MapSyncEndpoints();
 app.MapPanelEndpoints();
 app.MapPairEndpoints();
+app.MapPairApprovalEndpoints();
 
 app.Run();
 
