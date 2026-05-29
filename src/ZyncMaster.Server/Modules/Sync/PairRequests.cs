@@ -17,6 +17,11 @@ public sealed record UpdatePairRequest
     public string? State { get; init; }
 }
 
+public sealed record PushRequest
+{
+    public List<ZyncMaster.Core.AppointmentRecord> Events { get; init; } = new();
+}
+
 public sealed class CreatePairRequestValidator : AbstractValidator<CreatePairRequest>
 {
     private static readonly string[] ValidProviders = { "OutlookCom", "MicrosoftGraph" };

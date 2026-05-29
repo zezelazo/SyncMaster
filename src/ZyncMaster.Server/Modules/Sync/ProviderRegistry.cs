@@ -8,17 +8,30 @@ namespace ZyncMaster.Server;
 //                                    is never a destination in this milestone.
 //
 // Construction of the per-account Graph provider is delegated to a factory keyed on the
-// endpoint's AccountRef so each account gets its own token provider + calendar target.
+// endpoint's AccountRef so each account gets its own token provider + calendar target. The
+// factory indirection also lets tests substitute recording reader/writer doubles.
 public sealed class ProviderRegistry
 {
     public const string MicrosoftGraph = "MicrosoftGraph";
     public const string OutlookCom = "OutlookCom";
 
-    private readonly Func<string?, MicrosoftGraphProvider> _graphFactory;
+    private readonly Func<string?, ICalendarReader> _readerFactory;
+    private readonly Func<string?, ICalendarWriter> _writerFactory;
 
     public ProviderRegistry(Func<string?, MicrosoftGraphProvider> graphFactory)
     {
-        _graphFactory = graphFactory ?? throw new ArgumentNullException(nameof(graphFactory));
+        ArgumentNullException.ThrowIfNull(graphFactory);
+        _readerFactory = accountRef => graphFactory(accountRef);
+        _writerFactory = accountRef => graphFactory(accountRef);
+    }
+
+    // Test/extension seam: supply reader and writer factories independently.
+    public ProviderRegistry(
+        Func<string?, ICalendarReader> readerFactory,
+        Func<string?, ICalendarWriter> writerFactory)
+    {
+        _readerFactory = readerFactory ?? throw new ArgumentNullException(nameof(readerFactory));
+        _writerFactory = writerFactory ?? throw new ArgumentNullException(nameof(writerFactory));
     }
 
     // The reader for a source endpoint, or null when the provider has no server-side read
@@ -28,7 +41,7 @@ public sealed class ProviderRegistry
         ArgumentNullException.ThrowIfNull(endpoint);
         return endpoint.Provider switch
         {
-            MicrosoftGraph => _graphFactory(endpoint.AccountRef),
+            MicrosoftGraph => _readerFactory(endpoint.AccountRef),
             _ => null,
         };
     }
@@ -38,6 +51,6 @@ public sealed class ProviderRegistry
     public ICalendarWriter ResolveWriter(Endpoint endpoint)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
-        return _graphFactory(endpoint.AccountRef);
+        return _writerFactory(endpoint.AccountRef);
     }
 }

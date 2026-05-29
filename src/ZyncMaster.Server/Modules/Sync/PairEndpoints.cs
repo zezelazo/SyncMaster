@@ -88,5 +88,82 @@ public static class PairEndpoints
             await store.RemoveAsync(id);
             return Results.NoContent();
         }).RequireAuthorization();
+
+        app.MapPost("/api/pairs/{id}/push", async (
+            string id,
+            PushRequest req,
+            ISyncPairStore store,
+            ProviderRegistry registry,
+            Microsoft.Extensions.Options.IOptions<ServerOptions> opts,
+            CancellationToken ct) =>
+        {
+            ArgumentNullException.ThrowIfNull(req);
+
+            var pair = await store.GetAsync(id, ct);
+            if (pair is null)
+                return Results.NotFound();
+
+            var writer = registry.ResolveWriter(pair.Destination);
+            var (from, to) = Window(opts.Value);
+            var result = await writer
+                .MirrorAsync(pair.Destination.CalendarId, req.Events, ReminderMinutes, from, to, ct)
+                .ConfigureAwait(false);
+
+            await RecordRunAsync(store, pair, result, ct).ConfigureAwait(false);
+            return Results.Ok(result);
+        }).RequireAuthorization();
+
+        app.MapPost("/api/pairs/{id}/run", async (
+            string id,
+            ISyncPairStore store,
+            ProviderRegistry registry,
+            Microsoft.Extensions.Options.IOptions<ServerOptions> opts,
+            CancellationToken ct) =>
+        {
+            var pair = await store.GetAsync(id, ct);
+            if (pair is null)
+                return Results.NotFound();
+
+            var reader = registry.ResolveReader(pair.Source);
+            if (reader is null)
+            {
+                // OutlookCom sources have no server-side read; their events arrive via /push.
+                return Results.Conflict(new
+                {
+                    error = "no_server_reader",
+                    message = "This source provider has no server reader; use the push endpoint.",
+                });
+            }
+
+            var (from, to) = Window(opts.Value);
+            var events = await reader.ReadWindowAsync(pair.Source.CalendarId, from, to, ct).ConfigureAwait(false);
+
+            var writer = registry.ResolveWriter(pair.Destination);
+            var result = await writer
+                .MirrorAsync(pair.Destination.CalendarId, events, ReminderMinutes, from, to, ct)
+                .ConfigureAwait(false);
+
+            await RecordRunAsync(store, pair, result, ct).ConfigureAwait(false);
+            return Results.Ok(result);
+        }).RequireAuthorization();
+    }
+
+    private const int ReminderMinutes = 30;
+
+    private static (DateTimeOffset from, DateTimeOffset to) Window(ServerOptions opts)
+    {
+        var today = DateTimeOffset.UtcNow.Date;
+        var from = new DateTimeOffset(today, TimeSpan.Zero);
+        return (from, from.AddDays(opts.SyncWindowDays));
+    }
+
+    private static Task RecordRunAsync(ISyncPairStore store, SyncPair pair, MirrorResult result, CancellationToken ct)
+    {
+        var updated = pair with
+        {
+            LastRunUtc = DateTimeOffset.UtcNow,
+            LastResult = result,
+        };
+        return store.UpdateAsync(updated, ct);
     }
 }
