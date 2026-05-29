@@ -80,7 +80,7 @@ public sealed class MicrosoftGraphProvider : ICalendarReader, ICalendarWriter
             $"{GraphBaseUrl}me/calendars/{Uri.EscapeDataString(calendarId)}/calendarView" +
             $"?startDateTime={Uri.EscapeDataString(start)}" +
             $"&endDateTime={Uri.EscapeDataString(end)}" +
-            "&$select=id,iCalUId,subject,bodyPreview,start,end,isAllDay,isCancelled,organizer" +
+            "&$select=id,iCalUId,subject,body,start,end,isAllDay,isCancelled,organizer" +
             "&$top=50";
 
         var records = new List<AppointmentRecord>();
@@ -116,7 +116,9 @@ public sealed class MicrosoftGraphProvider : ICalendarReader, ICalendarWriter
             stableId = id;
 
         var subject = ev["subject"]?.Value<string>() ?? "";
-        var description = ev["bodyPreview"]?.Value<string>() ?? "";
+        // Full body content (not the truncated bodyPreview) so Graph→Graph mirroring keeps
+        // the complete description across cycles.
+        var description = ev["body"]?["content"]?.Value<string>() ?? "";
         var isAllDay = ev["isAllDay"]?.Value<bool>() ?? false;
         var isCancelled = ev["isCancelled"]?.Value<bool>() ?? false;
 

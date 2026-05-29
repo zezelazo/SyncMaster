@@ -82,7 +82,7 @@ public class MicrosoftGraphProviderTests
               "id": "evt1",
               "iCalUId": "ical-1",
               "subject": "Standup",
-              "bodyPreview": "Daily sync",
+              "body": { "contentType": "html", "content": "Daily sync" },
               "isAllDay": false,
               "isCancelled": false,
               "organizer": { "emailAddress": { "name": "Alice", "address": "alice@test" } },
