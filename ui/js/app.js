@@ -262,6 +262,97 @@ const STATUS = {
   paused:   { label: 'Paused',      dot: 'warn' },
 };
 
+// ---------------- Live data (bridge) with mock fallback ----------------
+// When the native bridge is available every screen reads real data through these
+// helpers; in a plain browser they return the mock data above so ui/index.html still
+// opens and demoes standalone. The caches let synchronous render functions paint the
+// latest snapshot while a refresh runs in the background.
+const live = {
+  pairs: null,       // [SyncPair] from listPairs
+  accounts: null,    // [AccountInfo] from listAccounts
+  calendars: {},     // accountRef -> [CalendarInfo]
+  autoStart: null,   // bool from getAutoStart
+  loadedPairs: false,
+  loadingPairs: false,
+};
+
+async function loadPairs() {
+  if (!Bridge.available) { live.pairs = null; return PAIRS; }
+  live.loadingPairs = true;
+  try {
+    const list = await Bridge.call('listPairs');
+    live.pairs = Array.isArray(list) ? list : [];
+    live.loadedPairs = true;
+    return live.pairs;
+  } catch (_) {
+    live.pairs = live.pairs || [];
+    return live.pairs;
+  } finally {
+    live.loadingPairs = false;
+  }
+}
+
+async function loadAccounts() {
+  if (!Bridge.available) return null;
+  try {
+    const list = await Bridge.call('listAccounts');
+    live.accounts = Array.isArray(list) ? list : [];
+    return live.accounts;
+  } catch (_) {
+    live.accounts = live.accounts || [];
+    return live.accounts;
+  }
+}
+
+async function loadCalendars(accountRef) {
+  if (!Bridge.available || !accountRef) return null;
+  try {
+    const list = await Bridge.call('listCalendars', accountRef);
+    live.calendars[accountRef] = Array.isArray(list) ? list : [];
+    return live.calendars[accountRef];
+  } catch (_) {
+    live.calendars[accountRef] = live.calendars[accountRef] || [];
+    return live.calendars[accountRef];
+  }
+}
+
+// Map a SyncPair (server shape) into the accordion view-model the renderer expects.
+function pairViewModel(p) {
+  const endpointLabel = (e) => {
+    if (!e) return { svc: 'Outlook', acct: '', email: '' };
+    const com = (e.provider || '').toLowerCase() === 'outlookcom';
+    return {
+      svc: com ? 'Outlook' : 'Outlook',
+      acct: e.calendarName || (com ? 'Outlook (this PC)' : 'Calendar'),
+      email: com ? 'Local Outlook' : (e.accountRef || ''),
+      provider: e.provider || '',
+    };
+  };
+  const lr = p.lastResult;
+  const events = lr
+    ? [
+        lr.created ? { time: '', title: `${lr.created} created`, sub: 'Last run', action: 'created' } : null,
+        lr.updated ? { time: '', title: `${lr.updated} updated`, sub: 'Last run', action: 'updated' } : null,
+        lr.deleted ? { time: '', title: `${lr.deleted} deleted`, sub: 'Last run', action: 'deleted' } : null,
+        lr.skipped ? { time: '', title: `${lr.skipped} skipped`, sub: 'Last run', action: 'skipped' } : null,
+      ].filter(Boolean)
+    : [];
+  const total = lr ? (lr.created + lr.updated + lr.deleted + lr.skipped) : 0;
+  return {
+    id: p.id,
+    name: p.name,
+    serverState: p.state, // active | paused | disabled
+    src: endpointLabel(p.source),
+    dst: endpointLabel(p.destination),
+    state: p.state === 'active' ? 'ok' : 'paused',
+    lastSync: p.lastRunUtc ? new Date(p.lastRunUtc).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—',
+    nextSync: (p.intervalMin || 10) * 60,
+    total,
+    eventCount: total,
+    events,
+  };
+}
+
 // ---------------- Shared fragments ----------------
 function pairBadge(svc) {
   return el('span', { class: 'pair-badge', dataset: { tone: svcTone(svc) }, text: svcShort(svc) });
@@ -389,7 +480,7 @@ function pairAccordion(pair) {
 
   const substat = (lab, val) => el('span', null,
     el('span', { class: 'route__stat-label', text: lab }), el('span', { class: 'route__stat-val num', text: String(val) }));
-  const syncBtn = el('button', { class: 'pair__sync-btn', disabled: isOffline, onclick: (e) => { e.stopPropagation(); runSync(); } },
+  const syncBtn = el('button', { class: 'pair__sync-btn', disabled: isOffline, onclick: (e) => { e.stopPropagation(); (Bridge.available && pair.id) ? runPairNow(pair.id) : runSync(); } },
     isSyncing ? el('span', { class: 'spinner', style: 'width:12px;height:12px;border-width:1.6px' }) : el('span', { style: 'display:inline-flex', html: icon('sync', { size: 12, stroke: 1.8 }) }),
     el('span', { class: 'num', text: isSyncing ? `${progress.done}/${progress.total}` : 'Sync now' }),
   );
@@ -428,11 +519,34 @@ function pairAccordion(pair) {
     }
 
     body.append(el('div', { class: 'pair__activity-head' },
-      el('span', { text: 'Recent events' }),
+      el('span', { text: pair.events.length ? 'Last result' : 'Recent events' }),
       el('span', { class: 'num', text: `${pair.events.length} of ${pair.eventCount}` })));
     const act = el('div', { class: 'pair__activity' });
-    pair.events.forEach((row) => act.append(activityRow(row)));
+    if (pair.events.length) pair.events.forEach((row) => act.append(activityRow(row)));
+    else act.append(el('div', { class: 'activity__sub', style: 'padding:8px 2px', text: 'No changes yet.' }));
     body.append(act);
+
+    // Live controls (native shell only): pause/resume, disable/enable, delete.
+    if (Bridge.available && pair.id) {
+      const paused = pair.serverState === 'paused';
+      const disabled = pair.serverState === 'disabled';
+      const controls = el('div', { class: 'pair__controls', style: 'display:flex;gap:6px;flex-wrap:wrap;margin-top:10px' });
+
+      controls.append(el('button', { class: 'btn btn--ghost', style: 'height:30px;padding:0 10px',
+        onclick: (e) => { e.stopPropagation(); setPairState(pair.id, paused ? 'active' : 'paused'); } },
+        iconEl(paused ? 'sync' : 'pause', 12, 1.8), el('span', { style: 'font-size:12px', text: paused ? 'Resume' : 'Pause' })));
+
+      controls.append(el('button', { class: 'btn btn--ghost', style: 'height:30px;padding:0 10px',
+        onclick: (e) => { e.stopPropagation(); setPairState(pair.id, disabled ? 'active' : 'disabled'); } },
+        iconEl(disabled ? 'check' : 'close', 12, 1.8), el('span', { style: 'font-size:12px', text: disabled ? 'Enable' : 'Disable' })));
+
+      controls.append(el('button', { class: 'btn btn--ghost', style: 'height:30px;padding:0 10px;color:var(--err);margin-left:auto',
+        onclick: (e) => { e.stopPropagation(); deletePair(pair.id); } },
+        iconEl('close', 12, 1.8), el('span', { style: 'font-size:12px', text: 'Delete' })));
+
+      body.append(controls);
+    }
+
     card.append(body);
   }
   return card;
@@ -443,12 +557,28 @@ function renderCalendar(root) {
     iconEl('plus', 12, 2), el('span', { style: 'font-size:12px', text: 'Add pair' }));
   root.append(viewHeader('Calendar Sync', { onBack: () => navigate('home'), action: addPairBtn }));
 
+  // Bridge: render the live pairs snapshot (refreshing in the background). Browser: mock.
+  const pairs = Bridge.available
+    ? (live.pairs || []).map(pairViewModel)
+    : PAIRS;
+
   const list = el('div', { class: 'pair-list' });
-  PAIRS.forEach((p) => list.append(pairAccordion(p)));
+  if (Bridge.available && pairs.length === 0) {
+    list.append(el('div', { class: 'glass glass--card', style: 'padding:18px;text-align:center;color:var(--ink-3)' },
+      el('div', { text: live.loadedPairs ? 'No sync pairs yet.' : 'Loading sync pairs…' })));
+  } else {
+    pairs.forEach((p) => list.append(pairAccordion(p)));
+  }
   root.append(list);
 
   root.append(el('div', { style: 'margin-top:10px;text-align:center' },
     el('button', { class: 'btn', onclick: () => navigate('add-pair') }, iconEl('plus', 13, 2), el('span', { text: 'Add a calendar pair' }))));
+
+  // Kick a one-shot background refresh the first time we open this screen; repaint when it
+  // lands. Live actions (run/pause/delete) refresh explicitly, so we don't poll on paint.
+  if (Bridge.available && !live.loadedPairs && !live.loadingPairs) {
+    loadPairs().then(() => { if (state.view === 'calendar') rerenderInPlace(); });
+  }
 }
 
 // ---------------- Wizard stepper (shared) ----------------
@@ -491,7 +621,26 @@ function intervalRow(get, set) {
 }
 
 // ---------------- Screen: Add Pair wizard ----------------
+// Mock-flow state (browser standalone). Bridged flow uses addPairLive below.
 const addPair = { step: 0, srcId: null, dstId: null, name: '', windowDays: 14, intervalMin: 15 };
+
+// Bridged flow: source is local Outlook COM or an online account+calendar; destination is
+// always an online account+calendar. accountRef/calendarId come from the host.
+const addPairLive = {
+  step: 0,
+  sourceKind: null,           // 'com' | 'online'
+  srcAccountRef: null, srcCalendarId: null, srcCalendarName: null,
+  dstAccountRef: null, dstCalendarId: null, dstCalendarName: null,
+  name: '', intervalMin: 15,
+};
+function resetAddPairLive() {
+  Object.assign(addPairLive, {
+    step: 0, sourceKind: null,
+    srcAccountRef: null, srcCalendarId: null, srcCalendarName: null,
+    dstAccountRef: null, dstCalendarId: null, dstCalendarName: null,
+    name: '', intervalMin: 15,
+  });
+}
 
 function calendarPicker(value, onChange, exclude) {
   const wrap = el('div', { class: 'glass glass--card', style: 'padding:4px' });
@@ -512,6 +661,7 @@ function calendarPicker(value, onChange, exclude) {
 }
 
 function renderAddPair(root) {
+  if (Bridge.available) { renderAddPairLive(root); return; }
   const labels = ['Source', 'Destination', 'Configure'];
   const src = CALENDAR_LIBRARY.find((c) => c.id === addPair.srcId);
   const dst = CALENDAR_LIBRARY.find((c) => c.id === addPair.dstId);
@@ -564,6 +714,135 @@ function completeAddPair() {
   if (Bridge.available) Bridge.call('saveConfig', JSON.stringify({ addPair: { ...addPair } })).catch(() => {});
   addPair.step = 0; addPair.srcId = null; addPair.dstId = null; addPair.name = '';
   navigate('calendar');
+}
+
+// ---------------- Add Pair wizard (bridged / live data) ----------------
+// A list of online accounts (from listAccounts), each expandable into its calendars
+// (from listCalendars). Selecting a calendar invokes onPick with the chosen endpoint.
+function onlineCalendarPicker(selectedCalendarId, onPick) {
+  const wrap = el('div', { class: 'glass glass--card', style: 'padding:4px' });
+  const list = el('div', { class: 'cal-list' });
+
+  const accounts = live.accounts || [];
+  if (accounts.length === 0) {
+    list.append(el('div', { class: 'cal-item__sub', style: 'padding:12px', text: 'No connected accounts. Connect one on the server first.' }));
+  }
+
+  accounts.forEach((acc) => {
+    const cals = live.calendars[acc.accountRef];
+    list.append(el('div', { class: 'route__label', style: 'padding:8px 10px 2px', text: acc.displayName || acc.accountRef }));
+    if (!cals) {
+      list.append(el('div', { class: 'cal-item__sub', style: 'padding:6px 12px', text: 'Loading calendars…' }));
+      loadCalendars(acc.accountRef).then(() => { if (state.view === 'add-pair') rerender(); });
+      return;
+    }
+    if (cals.length === 0) {
+      list.append(el('div', { class: 'cal-item__sub', style: 'padding:6px 12px', text: 'No calendars on this account.' }));
+    }
+    cals.forEach((c) => {
+      const selected = selectedCalendarId === c.id;
+      list.append(el('button', { class: `cal-item${selected ? ' is-selected' : ''}`,
+        onclick: () => onPick(acc, c) },
+        pairBadge('Outlook'),
+        el('div', null,
+          el('div', { class: 'cal-item__name', text: c.displayName || c.id }),
+          el('div', { class: 'cal-item__sub', text: acc.displayName || acc.accountRef })),
+        el('div', { class: 'cal-item__check', html: selected ? icon('check', { size: 12, stroke: 2.6 }) : '' })));
+    });
+  });
+
+  wrap.append(list);
+  return wrap;
+}
+
+function renderAddPairLive(root) {
+  const labels = ['Source', 'Destination', 'Configure'];
+  const a = addPairLive;
+
+  root.append(viewHeader('Add a sync pair', { onBack: () => { if (a.step === 0) navigate('calendar'); else { a.step--; rerender(); } } }));
+  root.append(wizardStepper(a.step, labels));
+
+  if (live.accounts === null) {
+    loadAccounts().then(() => { if (state.view === 'add-pair') rerender(); });
+  }
+
+  if (a.step === 0) {
+    root.append(el('div', { class: 'wizard-title', text: 'Pick the source calendar' }));
+    root.append(el('div', { class: 'wizard-sub', text: 'Changes here are mirrored to the destination. The source is never modified.' }));
+
+    // Two source kinds: local Outlook (COM) or an online account calendar.
+    const kinds = el('div', { class: 'provider-grid' });
+    kinds.append(el('button', { class: `provider-tile glass${a.sourceKind === 'com' ? ' is-selected' : ''}`,
+      onclick: () => { a.sourceKind = 'com'; a.srcCalendarId = 'local'; a.srcCalendarName = 'Outlook (this PC)'; a.srcAccountRef = null; rerender(); } },
+      el('div', { class: 'provider-tile__logo', dataset: { tone: 'azure' }, text: 'PC' }),
+      el('div', { class: 'provider-tile__name', text: 'Outlook on this PC' }),
+      el('div', { class: 'provider-tile__sub', text: 'Local Outlook · read via COM' })));
+    kinds.append(el('button', { class: `provider-tile glass${a.sourceKind === 'online' ? ' is-selected' : ''}`,
+      onclick: () => { a.sourceKind = 'online'; rerender(); } },
+      el('div', { class: 'provider-tile__logo', dataset: { tone: 'ink' }, text: 'M' }),
+      el('div', { class: 'provider-tile__name', text: 'Online account' }),
+      el('div', { class: 'provider-tile__sub', text: 'outlook.com · via the server' })));
+    root.append(kinds);
+
+    if (a.sourceKind === 'online') {
+      root.append(onlineCalendarPicker(a.srcCalendarId, (acc, c) => {
+        a.srcAccountRef = acc.accountRef; a.srcCalendarId = c.id; a.srcCalendarName = c.displayName || c.id; rerender();
+      }));
+    }
+
+    const srcReady = a.sourceKind === 'com' || (a.sourceKind === 'online' && a.srcCalendarId);
+    root.append(el('div', { class: 'wizard-foot' },
+      el('button', { class: 'btn btn--ghost', text: 'Cancel', onclick: () => navigate('calendar') }),
+      el('button', { class: 'btn btn--primary', disabled: !srcReady, onclick: () => { a.step = 1; rerender(); } },
+        el('span', { text: 'Continue' }), iconEl('arrowright', 14, 1.8))));
+  } else if (a.step === 1) {
+    root.append(el('div', { class: 'wizard-title', text: 'Pick the destination' }));
+    root.append(el('div', { class: 'wizard-sub', text: 'Events are written here. Past events on the destination are never touched.' }));
+    root.append(onlineCalendarPicker(a.dstCalendarId, (acc, c) => {
+      a.dstAccountRef = acc.accountRef; a.dstCalendarId = c.id; a.dstCalendarName = c.displayName || c.id; rerender();
+    }));
+    root.append(el('div', { class: 'wizard-foot' },
+      el('button', { class: 'btn btn--ghost', text: 'Back', onclick: () => { a.step = 0; rerender(); } }),
+      el('button', { class: 'btn btn--primary', disabled: !a.dstCalendarId, onclick: () => { a.step = 2; rerender(); } },
+        el('span', { text: 'Continue' }), iconEl('arrowright', 14, 1.8))));
+  } else if (a.step === 2) {
+    if (!a.name) a.name = `${a.srcCalendarName} → ${a.dstCalendarName}`;
+    root.append(el('div', { class: 'wizard-title', text: 'Configure the sync' }));
+    root.append(el('div', { class: 'wizard-sub', text: 'Review the pair and tune how often it runs.' }));
+
+    const col = (label, name, sub) => el('div', { class: 'pair-preview__col' },
+      el('div', { class: 'route__label', text: label }), el('div', { class: 'pair-preview__name', text: name }), el('div', { class: 'pair-preview__email', text: sub }));
+    root.append(el('div', { class: 'glass glass--card pair-preview' },
+      pairBadge('Outlook'), col('SOURCE', a.srcCalendarName, a.sourceKind === 'com' ? 'Local Outlook' : a.srcAccountRef),
+      el('span', { style: 'color:var(--ink-3);display:inline-flex', html: icon('arrowright', { size: 14, stroke: 1.8 }) }),
+      pairBadge('Outlook'), col('DESTINATION', a.dstCalendarName, a.dstAccountRef)));
+
+    const cfg = el('div', { class: 'glass glass--card config-section', style: 'margin-top:10px' });
+    const nameInput = el('input', { class: 'field-input', value: a.name });
+    nameInput.addEventListener('input', () => { a.name = nameInput.value; });
+    cfg.append(el('div', { class: 'cfg-row' },
+      el('div', null, el('div', { class: 'cfg-row__label', text: 'Pair name' }), el('div', { class: 'cfg-row__hint', text: 'Shown on your dashboard' })), nameInput));
+    cfg.append(intervalRow(() => a.intervalMin, (v) => { a.intervalMin = v; rerender(); }));
+    root.append(cfg);
+
+    root.append(el('div', { class: 'wizard-foot' },
+      el('button', { class: 'btn btn--ghost', text: 'Back', onclick: () => { a.step = 1; rerender(); } }),
+      el('button', { class: 'btn btn--primary', onclick: () => completeAddPairLive() }, iconEl('check', 14, 2.2), el('span', { text: 'Create pair' }))));
+  }
+}
+
+function completeAddPairLive() {
+  const a = addPairLive;
+  const source = a.sourceKind === 'com'
+    ? { provider: 'OutlookCom', calendarId: 'local', calendarName: 'Outlook (this PC)' }
+    : { provider: 'MicrosoftGraph', accountRef: a.srcAccountRef, calendarId: a.srcCalendarId, calendarName: a.srcCalendarName };
+  const destination = { provider: 'MicrosoftGraph', accountRef: a.dstAccountRef, calendarId: a.dstCalendarId, calendarName: a.dstCalendarName };
+  const req = { name: a.name, source, destination, intervalMin: a.intervalMin };
+
+  Bridge.call('createPair', JSON.stringify(req))
+    .then(() => loadPairs())
+    .then(() => { resetAddPairLive(); navigate('calendar'); })
+    .catch(() => { resetAddPairLive(); navigate('calendar'); });
 }
 
 // ---------------- Screen: Add Calendar wizard ----------------
@@ -651,11 +930,32 @@ function renderConfig(root) {
     row('Target calendar', el('div', { class: 'cfg-row__hint', text: 'Where mirrored events are written' }), targetSel),
     sliderRow('Sync window', () => settings.windowDays, (v) => { settings.windowDays = v; pushConfig(); })));
 
-  // Schedule
+  // Schedule. Run-at-startup is backed by the host's auto-start manager when bridged.
+  const startupToggle = toggle(
+    () => (Bridge.available && live.autoStart !== null) ? live.autoStart : settings.startup,
+    (v) => {
+      settings.startup = v;
+      if (Bridge.available) {
+        live.autoStart = v;
+        Bridge.call('setAutoStart', v ? 'true' : 'false').catch(() => {});
+      }
+    });
+  if (Bridge.available && live.autoStart === null) {
+    Bridge.call('getAutoStart').then((r) => { live.autoStart = !!(r && r.enabled); if (state.view === 'config') rerender(); }).catch(() => {});
+  }
   root.append(section('Schedule',
     row('Auto-sync', el('div', { class: 'cfg-row__hint', text: 'Mirror changes automatically' }), toggle(() => settings.autoSync, (v) => { settings.autoSync = v; })),
     intervalRow(() => settings.interval, (v) => { settings.interval = v; pushConfig(); rerender(); }),
-    row('Run at startup', el('div', { class: 'cfg-row__hint', text: 'Launch Zync Master when you sign in' }), toggle(() => settings.startup, (v) => { settings.startup = v; }))));
+    row('Run at startup', el('div', { class: 'cfg-row__hint', text: 'Launch Zync Master when you sign in' }), startupToggle)));
+
+  // Tools: basic .txt export + unlink the connected Microsoft account (native shell only).
+  if (Bridge.available) {
+    const txtBtn = el('button', { class: 'btn btn--ghost', onclick: () => generateBasicTxt(txtBtn) }, iconEl('folder', 13, 1.6), el('span', { text: 'Generate .txt' }));
+    const unlinkBtn = el('button', { class: 'btn btn--ghost', style: 'color:var(--err)', onclick: () => unlinkAccount() }, el('span', { text: 'Unlink…' }));
+    root.append(section('Tools',
+      row('Basic .txt export', el('div', { class: 'cfg-row__hint', text: 'Save this month as a pipe-delimited text file' }), txtBtn),
+      row('Microsoft account', el('div', { class: 'cfg-row__hint', text: 'Disconnect and disable its sync pairs' }), unlinkBtn)));
+  }
 
   // This device
   const nameInput = el('input', { class: 'field-input', value: settings.deviceName });
@@ -800,6 +1100,56 @@ function runSync() {
       rerenderInPlace();
     }
   }, 180);
+}
+
+// ---------------- Live per-pair actions (native shell) ----------------
+function runPairNow(id) {
+  if (!Bridge.available || !id) return;
+  announce('Sync started');
+  Bridge.call('runPairNow', id)
+    .then(() => loadPairs())
+    .then(() => { if (state.view === 'calendar') rerenderInPlace(); })
+    .catch(() => { announce('Sync failed.'); });
+}
+function setPairState(id, newState) {
+  if (!Bridge.available || !id) return;
+  Bridge.call('updatePair', JSON.stringify({ id, state: newState }))
+    .then(() => loadPairs())
+    .then(() => { if (state.view === 'calendar') rerender(); })
+    .catch(() => {});
+}
+function deletePair(id) {
+  if (!Bridge.available || !id) return;
+  Bridge.call('deletePair', id)
+    .then(() => loadPairs())
+    .then(() => { openPairs.delete(id); if (state.view === 'calendar') rerender(); })
+    .catch(() => {});
+}
+
+// ---------------- Settings tools (native shell) ----------------
+function generateBasicTxt(btn) {
+  if (!Bridge.available) return;
+  const span = btn && btn.querySelector('span');
+  const orig = span ? span.textContent : '';
+  if (span) span.textContent = 'Saving…';
+  Bridge.call('generateTxt')
+    .then((r) => { if (span) span.textContent = (r && r.cancelled) ? 'Cancelled' : 'Saved'; })
+    .catch(() => { if (span) span.textContent = 'Failed'; })
+    .finally(() => { if (span) setTimeout(() => { span.textContent = orig || 'Generate .txt'; }, 1800); });
+}
+
+function unlinkAccount() {
+  if (!Bridge.available) return;
+  const run = () => {
+    const accounts = live.accounts || [];
+    const target = accounts.find((x) => x.isDefault) || accounts[0];
+    if (!target) { announce('No connected account to unlink.'); return; }
+    Bridge.call('unlinkAccount', target.accountRef)
+      .then(() => { live.accounts = null; return loadPairs(); })
+      .then(() => { announce('Account unlinked.'); if (state.view === 'config') rerender(); })
+      .catch(() => { announce('Unlink failed.'); });
+  };
+  if (live.accounts === null) loadAccounts().then(run); else run();
 }
 
 // ---------------- Native status mapping ----------------

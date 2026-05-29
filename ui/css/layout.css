@@ -596,6 +596,7 @@
   color: inherit;
 }
 .provider-tile:hover { transform: translateY(-1px); border-color: var(--terra-edge); }
+.provider-tile.is-selected { outline: 1px solid var(--azure-edge); background: var(--azure-soft); }
 .provider-tile__logo {
   width: 32px; height: 32px;
   display: grid; place-items: center;
