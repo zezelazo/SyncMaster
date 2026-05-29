@@ -18,11 +18,11 @@ using Xunit;
 
 namespace ZyncMaster.Server.Tests.Sync;
 
-public class SyncEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
+public class SyncEndpointsTests : IClassFixture<ServerTestFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly ServerTestFactory _factory;
 
-    public SyncEndpointsTests(WebApplicationFactory<Program> factory) => _factory = factory;
+    public SyncEndpointsTests(ServerTestFactory factory) => _factory = factory;
 
     private sealed class RecordingCalendarTarget : ICalendarTarget
     {
@@ -78,7 +78,7 @@ public class SyncEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
         bool seedAccount = true,
         string? deviceTargetCalendarId = null,
         Action<RecordingCalendarTarget>? configure = null) =>
-        new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        new ServerTestFactory().WithWebHostBuilder(builder =>
         {
             builder.ConfigureServices(services =>
             {

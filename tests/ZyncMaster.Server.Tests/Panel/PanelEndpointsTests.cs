@@ -8,11 +8,11 @@ using Xunit;
 
 namespace ZyncMaster.Server.Tests.Panel;
 
-public class PanelEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
+public class PanelEndpointsTests : IClassFixture<ServerTestFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly ServerTestFactory _factory;
 
-    public PanelEndpointsTests(WebApplicationFactory<Program> factory) => _factory = factory;
+    public PanelEndpointsTests(ServerTestFactory factory) => _factory = factory;
 
     [Fact]
     public async Task Root_returns_html_containing_ZyncMaster()

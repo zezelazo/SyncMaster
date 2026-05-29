@@ -17,11 +17,11 @@ using Xunit;
 
 namespace ZyncMaster.Server.Tests.Sync;
 
-public class PairRunPushTests : IClassFixture<WebApplicationFactory<Program>>
+public class PairRunPushTests : IClassFixture<ServerTestFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly ServerTestFactory _factory;
 
-    public PairRunPushTests(WebApplicationFactory<Program> factory) => _factory = factory;
+    public PairRunPushTests(ServerTestFactory factory) => _factory = factory;
 
     private sealed class RecordingWriter : ICalendarWriter
     {
@@ -53,7 +53,7 @@ public class PairRunPushTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     private static WebApplicationFactory<Program> Build(RecordingReader? reader, RecordingWriter writer) =>
-        new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        new ServerTestFactory().WithWebHostBuilder(builder =>
         {
             builder.ConfigureServices(services =>
             {

@@ -17,11 +17,11 @@ using Xunit;
 
 namespace ZyncMaster.Server.Tests.Sync;
 
-public class PairEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
+public class PairEndpointsTests : IClassFixture<ServerTestFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly ServerTestFactory _factory;
 
-    public PairEndpointsTests(WebApplicationFactory<Program> factory) => _factory = factory;
+    public PairEndpointsTests(ServerTestFactory factory) => _factory = factory;
 
     private sealed class FakeTarget : ICalendarTarget
     {
@@ -52,7 +52,7 @@ public class PairEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     private static WebApplicationFactory<Program> Build(bool seedAccount = true) =>
-        new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        new ServerTestFactory().WithWebHostBuilder(builder =>
         {
             builder.ConfigureServices(services =>
             {

@@ -31,7 +31,7 @@ public class ConnectEndpointsTests
     }
 
     private static WebApplicationFactory<Program> CreateFactory() =>
-        new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        new ServerTestFactory().WithWebHostBuilder(b =>
             b.ConfigureServices(s =>
             {
                 s.RemoveAll<IMicrosoftTokenService>();

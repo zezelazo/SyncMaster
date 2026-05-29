@@ -12,14 +12,14 @@ using Xunit;
 
 namespace ZyncMaster.Server.Tests.Devices;
 
-public class PairApprovalEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
+public class PairApprovalEndpointsTests : IClassFixture<ServerTestFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly ServerTestFactory _factory;
 
-    public PairApprovalEndpointsTests(WebApplicationFactory<Program> factory) => _factory = factory;
+    public PairApprovalEndpointsTests(ServerTestFactory factory) => _factory = factory;
 
     private static WebApplicationFactory<Program> Build(bool seedAccount) =>
-        new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        new ServerTestFactory().WithWebHostBuilder(builder =>
         {
             builder.ConfigureServices(services =>
             {

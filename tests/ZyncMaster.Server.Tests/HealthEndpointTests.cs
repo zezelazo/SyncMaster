@@ -6,10 +6,10 @@ using Xunit;
 
 namespace ZyncMaster.Server.Tests;
 
-public class HealthEndpointTests : IClassFixture<WebApplicationFactory<Program>>
+public class HealthEndpointTests : IClassFixture<ServerTestFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
-    public HealthEndpointTests(WebApplicationFactory<Program> factory) => _factory = factory;
+    private readonly ServerTestFactory _factory;
+    public HealthEndpointTests(ServerTestFactory factory) => _factory = factory;
 
     [Fact]
     public async Task Health_returns_ok()

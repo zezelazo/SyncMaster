@@ -9,11 +9,11 @@ using Xunit;
 
 namespace ZyncMaster.Server.Tests.Security;
 
-public class ApiKeyAuthTests : IClassFixture<WebApplicationFactory<Program>>
+public class ApiKeyAuthTests : IClassFixture<ServerTestFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly ServerTestFactory _factory;
 
-    public ApiKeyAuthTests(WebApplicationFactory<Program> factory) => _factory = factory;
+    public ApiKeyAuthTests(ServerTestFactory factory) => _factory = factory;
 
     private async Task<(WebApplicationFactory<Program> factory, string key, string deviceId)> SeedDeviceAsync()
     {

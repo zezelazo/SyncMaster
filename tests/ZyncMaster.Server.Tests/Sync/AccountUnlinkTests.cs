@@ -14,14 +14,14 @@ using Xunit;
 
 namespace ZyncMaster.Server.Tests.Sync;
 
-public class AccountUnlinkTests : IClassFixture<WebApplicationFactory<Program>>
+public class AccountUnlinkTests : IClassFixture<ServerTestFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly ServerTestFactory _factory;
 
-    public AccountUnlinkTests(WebApplicationFactory<Program> factory) => _factory = factory;
+    public AccountUnlinkTests(ServerTestFactory factory) => _factory = factory;
 
     private static WebApplicationFactory<Program> Build() =>
-        new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        new ServerTestFactory().WithWebHostBuilder(builder =>
         {
             builder.ConfigureServices(services =>
             {

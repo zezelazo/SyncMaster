@@ -9,11 +9,11 @@ using Xunit;
 
 namespace ZyncMaster.Server.Tests.Devices;
 
-public class DeviceEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
+public class DeviceEndpointsTests : IClassFixture<ServerTestFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly ServerTestFactory _factory;
 
-    public DeviceEndpointsTests(WebApplicationFactory<Program> factory) => _factory = factory;
+    public DeviceEndpointsTests(ServerTestFactory factory) => _factory = factory;
 
     [Fact]
     public async Task PairStart_returns_pairingId_and_code()
