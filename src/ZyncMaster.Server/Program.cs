@@ -1,18 +1,38 @@
-﻿using Microsoft.Extensions.Options;
+﻿using Microsoft.AspNetCore.DataProtection;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using ZyncMaster.Server;
+using ZyncMaster.Server.Data;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<ServerOptions>(builder.Configuration.GetSection("Server"));
-builder.Services.AddDataProtection();
+
+// EF Core persistence. A DbContextFactory (singleton) backs the stores so they can be
+// shared by the singleton composition root; a scoped DbContext is also registered for
+// the Data Protection key ring. The connection string falls back to a LocalDB-style dev
+// default; WS-D wires deployment + migration-on-startup.
+var connectionString = builder.Configuration.GetConnectionString("ZyncMasterDb")
+    ?? "Server=(localdb)\\MSSQLLocalDB;Database=ZyncMaster;Trusted_Connection=True;MultipleActiveResultSets=true";
+
+builder.Services.AddDbContextFactory<ZyncMasterDbContext>(o => o.UseSqlServer(connectionString));
+builder.Services.AddDbContext<ZyncMasterDbContext>(
+    o => o.UseSqlServer(connectionString),
+    contextLifetime: ServiceLifetime.Scoped,
+    optionsLifetime: ServiceLifetime.Singleton);
+
+builder.Services.AddDataProtection()
+    .PersistKeysToDbContext<ZyncMasterDbContext>()
+    .SetApplicationName("ZyncMaster");
 
 builder.Services.AddHttpClient<IMicrosoftTokenService, MicrosoftTokenService>();
 builder.Services.AddHttpClient("graph");
 
-builder.Services.AddSingleton<IDeviceStore, InMemoryDeviceStore>();
-builder.Services.AddSingleton<ISyncStateStore, InMemorySyncStateStore>();
+builder.Services.AddSingleton<ICurrentUserAccessor, DefaultCurrentUserAccessor>();
+builder.Services.AddSingleton<IDeviceStore, EfDeviceStore>();
+builder.Services.AddSingleton<ISyncStateStore, EfSyncStateStore>();
 builder.Services.AddSingleton<ISecretProvider, ConfigurationSecretProvider>();
-builder.Services.AddSingleton<IConnectedAccountStore, DataProtectionConnectedAccountStore>();
+builder.Services.AddSingleton<IConnectedAccountStore, EfConnectedAccountStore>();
 builder.Services.AddScoped<DeviceService>();
 builder.Services.AddScoped<SyncService>();
 
@@ -41,7 +61,7 @@ builder.Services.AddSingleton<Func<string?, MicrosoftGraphProvider>>(sp => accou
     return new MicrosoftGraphProvider(readHttp, tokenProvider, target);
 });
 builder.Services.AddSingleton<ProviderRegistry>();
-builder.Services.AddSingleton<ISyncPairStore, InMemorySyncPairStore>();
+builder.Services.AddSingleton<ISyncPairStore, EfSyncPairStore>();
 
 builder.Services.AddAuthentication("ApiKey").AddApiKeyAuth();
 builder.Services.AddAuthorization();
