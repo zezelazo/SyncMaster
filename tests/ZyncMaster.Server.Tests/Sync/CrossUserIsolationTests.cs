@@ -212,10 +212,18 @@ public class CrossUserIsolationTests
         };
     }
 
-    private static object PairBody(string name = "Pair", string destAccountRef = "alice@test") => new
+    private static object PairBody(
+        string name = "Pair",
+        string destAccountRef = "alice@test",
+        string sourceProvider = "OutlookCom") => new
     {
         name,
-        source = new { provider = "OutlookCom", calendarId = "src", calendarName = "Src" },
+        // OutlookCom sources have no server reader (their events arrive via /push); a
+        // MicrosoftGraph source has one, so /run can read+mirror end to end. The source
+        // account ref mirrors the destination so a Graph source resolves the caller's account.
+        source = sourceProvider == "MicrosoftGraph"
+            ? (object)new { provider = "MicrosoftGraph", accountRef = destAccountRef, calendarId = "src", calendarName = "Src" }
+            : new { provider = "OutlookCom", calendarId = "src", calendarName = "Src" },
         destination = new { provider = "MicrosoftGraph", accountRef = destAccountRef, calendarId = "dst", calendarName = "Dst" },
         intervalMin = 15,
     };
@@ -300,6 +308,76 @@ public class CrossUserIsolationTests
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         // The writer was resolved with A's account ref — not "default", not "bob@test".
         h.PairWriterAccountRefs.Should().ContainSingle().Which.Should().Be("alice@test");
+    }
+
+    // ---- /api/pairs/{id}/run accepts EITHER scheme (cookie panel OR device api key) -----
+
+    [Fact]
+    public async Task PanelCookie_run_on_own_pair_returns_200_and_mirrors()
+    {
+        using var h = new Harness();
+
+        // A signs in via cookie, connects alice@test, and owns a Graph-sourced pair (so /run
+        // has a server reader). The "Sync now" button in the browser panel posts /run under
+        // the cookie; it must succeed (200) rather than 401-and-drop-to-the-sign-in-gate.
+        var aClient = await h.SignInAsync("oid-a", "alice@test", "Alice", "rt-a");
+        var aPairId = await CreatePairAsync(aClient, PairBody("A pair", "alice@test", sourceProvider: "MicrosoftGraph"));
+
+        var resp = await aClient.PostAsync($"/api/pairs/{aPairId}/run", null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        // The reader/writer resolved with A's account — proving the cookie identity flowed.
+        h.PairReaderAccountRefs.Should().ContainSingle().Which.Should().Be("alice@test");
+        h.PairWriterAccountRefs.Should().ContainSingle().Which.Should().Be("alice@test");
+    }
+
+    [Fact]
+    public async Task DeviceApiKey_run_on_own_pair_still_returns_200()
+    {
+        using var h = new Harness();
+
+        var aClient = await h.SignInAsync("oid-a", "alice@test", "Alice", "rt-a");
+        var aPairId = await CreatePairAsync(aClient, PairBody("A pair", "alice@test", sourceProvider: "MicrosoftGraph"));
+        var aUserId = await h.UserIdForAsync("oid-a", "alice@test", "Alice");
+        var aDevice = h.DeviceClient(await h.AddDeviceForUserAsync(aUserId));
+
+        var resp = await aDevice.PostAsync($"/api/pairs/{aPairId}/run", null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        h.PairWriterAccountRefs.Should().ContainSingle().Which.Should().Be("alice@test");
+    }
+
+    [Fact]
+    public async Task Run_with_no_credentials_returns_401()
+    {
+        using var h = new Harness();
+
+        var aClient = await h.SignInAsync("oid-a", "alice@test", "Alice", "rt-a");
+        var aPairId = await CreatePairAsync(aClient, PairBody("A pair", "alice@test", sourceProvider: "MicrosoftGraph"));
+
+        var anon = h.Factory.CreateClient();
+        var resp = await anon.PostAsync($"/api/pairs/{aPairId}/run", null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task PanelCookie_run_on_another_users_pair_returns_404()
+    {
+        using var h = new Harness();
+
+        // A owns a Graph-sourced pair.
+        var aClient = await h.SignInAsync("oid-a", "alice@test", "Alice", "rt-a");
+        var aPairId = await CreatePairAsync(aClient, PairBody("A pair", "alice@test", sourceProvider: "MicrosoftGraph"));
+
+        // B signs in (cookie) and posts /run against A's pair id -> user-scoped store
+        // resolves null -> 404, never 200 and never a leak. No mirror happens.
+        var bClient = await h.SignInAsync("oid-b", "bob@test", "Bob", "rt-b");
+        var resp = await bClient.PostAsync($"/api/pairs/{aPairId}/run", null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        h.PairReaderAccountRefs.Should().BeEmpty();
+        h.PairWriterAccountRefs.Should().BeEmpty();
     }
 
     // ---- Device sync path (/api/sync/calendar) uses the device owner's account ---------

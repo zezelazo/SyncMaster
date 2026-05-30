@@ -217,7 +217,7 @@ public static class PairEndpoints
 
             await RecordRunAsync(store, pair, result, ct).ConfigureAwait(false);
             return Results.Ok(result);
-        }).RequireApiKey();
+        }).RequireCookieOrApiKey();
     }
 
     private const int ReminderMinutes = 30;
