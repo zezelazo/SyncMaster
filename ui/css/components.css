@@ -52,15 +52,48 @@
   border: 1px solid var(--ctrl-stroke);
   border-radius: var(--r-pill);
   cursor: pointer;
-  transition: transform var(--d-fast) var(--ease-out),
-              background var(--d-fast) var(--ease-out),
-              border-color var(--d-fast) var(--ease-out),
-              box-shadow var(--d-fast) var(--ease-out);
+  isolation: isolate;
+  /* No transform here: the button box (and thus its hit area) must never move on
+     hover/press. Feedback is a calm border-light glow only. */
+  transition: background var(--d-base) var(--ease-out),
+              border-color var(--d-base) var(--ease-out),
+              box-shadow var(--d-base) var(--ease-out);
+}
+/* Border-light: a soft, slow glow that travels the button's edge. Decorative only, so it
+   is pointer-events:none and sits behind the label (z-index:-1) — it can never swallow a
+   click. The clickable surface is always the button itself. */
+.btn::before {
+  content: "";
+  position: absolute; inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(from var(--edge-angle, 0deg),
+    transparent 0deg, var(--terra-edge) 40deg, transparent 110deg, transparent 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity var(--d-base) var(--ease-out);
+  pointer-events: none;
+  z-index: -1;
 }
 .btn:hover { background: var(--ctrl-hover); border-color: var(--ctrl-active); }
-.btn:active { transform: translateY(1px); }
+.btn:hover::before { opacity: 0.9; animation: edge-travel 4.5s linear infinite; }
 .btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+.btn[disabled]:hover::before { opacity: 0; animation: none; }
 .btn svg { width: 14px; height: 14px; }
+
+/* The travelling-light angle. Driven via a registered custom property so it can animate
+   smoothly; falls back to a static glow where @property is unsupported. */
+@property --edge-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes edge-travel {
+  to { --edge-angle: 360deg; }
+}
 
 .btn--primary {
   background: linear-gradient(180deg, var(--terra-2) 0%, var(--terra) 100%);
@@ -73,8 +106,14 @@
   padding: 0 18px;
   min-width: 124px;
 }
-.btn--primary:hover { filter: brightness(1.04); }
-.btn--primary:active { filter: brightness(0.96); }
+/* Primary CTA: no brightness flicker on hover/press and no transform. The border-light
+   glow (brighter terra, slightly stronger reach) is the only hover feedback. */
+.btn--primary::before {
+  background: conic-gradient(from var(--edge-angle, 0deg),
+    transparent 0deg, rgba(255,255,255,0.85) 30deg, var(--terra-2) 70deg, transparent 130deg, transparent 360deg);
+  padding: 1.5px;
+}
+.btn--primary:hover::before { opacity: 1; }
 .btn--primary[data-loading="true"] { padding-left: 14px; }
 
 .btn--ghost {
@@ -90,6 +129,17 @@
 }
 
 .btn--block { width: 100%; }
+
+/* "Sign in with Microsoft" — official 4-square brand mark left of the label, both on a
+   vertically-centred flex row with a comfortable gap (the .btn flex row already centres). */
+.ms-signin { gap: 10px; }
+.ms-signin__logo {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; flex: none;
+  pointer-events: none;
+}
+.ms-signin__logo svg { width: 18px; height: 18px; display: block; }
+.ms-signin__label { line-height: 1; }
 
 /* spinner inside primary / generic */
 .spinner {
@@ -111,12 +161,13 @@
   border-color: rgba(227, 103, 116, 0.6);
 }
 
-/* progress fill on the CTA */
+/* progress fill on the CTA — decorative overlay, must never intercept the click. */
 .progress-fill {
   position: absolute; left: 0; top: 0; bottom: 0;
   width: var(--p, 0%);
   background: rgba(255,255,255,0.18);
   transition: width 240ms var(--ease-out);
+  pointer-events: none;
 }
 
 /* =========================================================
@@ -166,10 +217,10 @@
   gap: 10px;
   padding: 9px 10px;
   border-radius: var(--r-sm);
-  transition: background var(--d-fast), transform var(--d-fast);
+  transition: background var(--d-base);
 }
 .activity__row + .activity__row { border-top: 1px solid var(--glass-stroke-2); }
-.activity__row:hover { background: var(--ctrl-hover); transform: translateX(2px); }
+.activity__row:hover { background: var(--ctrl-hover); }
 .activity__time {
   font-family: var(--font-num);
   font-size: 11px; color: var(--ink-3);
@@ -289,10 +340,9 @@
   font-size: 12px; font-weight: 600;
   color: var(--ink-2);
   cursor: pointer;
-  transition: color 180ms, background 180ms, transform 120ms;
+  transition: color var(--d-base), background var(--d-base);
 }
 .segmented__item svg { width: 12px; height: 12px; }
-.segmented__item:active { transform: scale(0.95); }
 .segmented__item[aria-pressed="true"] {
   background: var(--ink-1);
   color: var(--bg-1);
@@ -414,4 +464,6 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .btn--primary { animation: none; }
+  /* Keep the border-light as a still glow; do not let it travel. */
+  .btn:hover::before { animation: none; }
 }
