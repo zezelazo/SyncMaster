@@ -148,6 +148,31 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+// Security headers (L3). Applied to every response, including static panel/UI assets.
+//   X-Frame-Options: DENY        — the panel is never meant to be framed (clickjacking).
+//   X-Content-Type-Options: nosniff — stop MIME sniffing of served assets.
+//   Referrer-Policy: no-referrer — don't leak the panel URL to outbound navigations.
+// NOTE: no Content-Security-Policy header is set yet. A CSP would break the /pair page's
+// inline <script> and the UI's inline style attributes; it needs to be tuned against the UI
+// (hashes/nonces) before it can be enabled. TODO: add a tuned CSP as a follow-up.
+app.Use(async (context, next) =>
+{
+    var headers = context.Response.Headers;
+    headers["X-Frame-Options"] = "DENY";
+    headers["X-Content-Type-Options"] = "nosniff";
+    headers["Referrer-Policy"] = "no-referrer";
+    await next();
+});
+
+// Transport hardening only outside Development. The WebApplicationFactory test host runs as
+// Development over plain http, so gating on !IsDevelopment() keeps the test host unaffected
+// (no HSTS, no forced https redirect) while production gets both.
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+    app.UseHttpsRedirection();
+}
+
 app.UseAuthentication();
 app.UseAuthorization();
 
