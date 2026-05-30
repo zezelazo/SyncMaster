@@ -51,20 +51,39 @@ document.documentElement.setAttribute('data-platform', PLATFORM);
 const hasWebView = typeof window !== 'undefined' && window.chrome && window.chrome.webview;
 if (hasWebView) document.documentElement.classList.add('native-shell');
 
-// ---------------- Native bridge (optional) ----------------
-// Embedded WebView2 (window.chrome.webview) -> postMessage / message event.
-// Loopback host (127.0.0.1 / localhost over http) -> POST /__bridge/send + long-poll
-// GET /__bridge/poll. Otherwise (file:// or plain web) -> no bridge, mock data only.
-// Request/reply actions carry a correlationId; unsolicited {event:"status"} update live.
+// ---------------- Transport (4 modes) ----------------
+// 1. native    — embedded WebView2 (window.chrome.webview) -> postMessage / message event.
+// 2. loopback  — the desktop App's loopback host (127.0.0.1 / localhost over http that
+//                exposes /__bridge): POST /__bridge/send + long-poll GET /__bridge/poll.
+// 3. web       — the Server-hosted browser panel: same-origin REST API. Bridge.call(action)
+//                maps to fetch() against /api/* with credentials:'include' (cookie). This is
+//                the deployed panel served by ZyncMaster.Server; it is same-origin with the API.
+// 4. mock      — file:// or anything else: no bridge, the mock data above demoes standalone.
+//
+// native is detected synchronously (window.chrome.webview). For http(s) non-native pages we
+// can't tell the App's loopback host (mode 2, serves the bundled UI + /__bridge but no REST
+// API) from the Server panel (mode 3, the REST API + /health) by URL alone — both may live on
+// localhost. So we probe GET /health once at boot: the Server panel answers it 200 {ok}, the
+// App's loopback host has no such route and 404s it (its /__bridge/poll long-poll is a 25s
+// blocking call, so it is NOT a fast discriminator). A 200 /health -> web; anything else, on a
+// loopback origin, -> the App's loopback bridge. boot() awaits this resolution before the first
+// data-driven render, so Bridge.available / Bridge.webPanel are stable by the time screens paint.
+// Request/reply actions carry a correlationId; unsolicited {event:"status"} updates live.
 const Bridge = (() => {
-  const isLoopback =
-    typeof location !== 'undefined' &&
-    /^https?:$/.test(location.protocol) &&
-    /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
-  const available = !!hasWebView || isLoopback;
+  const isHttp = typeof location !== 'undefined' && /^https?:$/.test(location.protocol);
+  // The App's loopback host only ever binds 127.0.0.1 / localhost. On any other http(s) origin
+  // (a deployed panel) the page is unambiguously the Server-hosted web panel, so we skip the
+  // probe entirely and go straight to the web transport.
+  const couldBeLoopback = isHttp && /^(127\.0\.0\.1|localhost)$/.test((typeof location !== 'undefined' && location.hostname) || '');
 
-  const pending = new Map(); // correlationId -> { resolve, reject }
+  // mode: 'native' | 'loopback' | 'web' | 'mock'. Resolved synchronously for native; for the
+  // http(s) cases it defaults to 'web' and may be revised to 'loopback' by the boot probe (only
+  // on a loopback origin, where the App's host could be the one serving this page).
+  let mode = hasWebView ? 'native' : (isHttp ? 'web' : 'mock');
+
+  const pending = new Map(); // correlationId -> { resolve, reject }  (native + loopback only)
   let statusCb = null;
+  let unauthorizedCb = null;
   let seq = 0;
 
   function newId() { return `c${Date.now()}_${seq++}`; }
@@ -83,10 +102,10 @@ const Bridge = (() => {
   }
 
   // send(obj) — fire a message to the host. Used both for request/reply (with a
-  // correlationId) and for fire-and-forget window-control actions.
+  // correlationId) and for fire-and-forget window-control actions. Native/loopback only.
   function send(obj) {
-    if (hasWebView) { window.chrome.webview.postMessage(JSON.stringify(obj)); return; }
-    if (isLoopback) { fetch('/__bridge/send', { method: 'POST', body: JSON.stringify(obj) }).catch(() => {}); }
+    if (mode === 'native') { window.chrome.webview.postMessage(JSON.stringify(obj)); return; }
+    if (mode === 'loopback') { fetch('/__bridge/send', { method: 'POST', body: JSON.stringify(obj) }).catch(() => {}); }
   }
 
   async function pollLoop() {
@@ -101,20 +120,117 @@ const Bridge = (() => {
     }
   }
 
+  // Probe whether THIS origin is the Server-hosted web panel (the REST API). GET /health is a
+  // fast, unauthenticated 200 {status:"ok"} on the Server; the App's loopback host has no such
+  // route and 404s it. Resolves true -> web transport; false -> the loopback bridge. A network
+  // error resolves false (safer to assume the loopback host on a loopback origin).
+  function probeIsServerPanel() {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+      const t = setTimeout(() => done(false), 1500);
+      fetch('/health', { method: 'GET' })
+        .then((res) => res.ok ? res.text() : Promise.reject(new Error('not ok')))
+        .then((body) => { clearTimeout(t); done(/"?status"?\s*:\s*"?ok/i.test(body)); })
+        .catch(() => { clearTimeout(t); done(false); });
+    });
+  }
+
+  // resolveTransport — settle the http(s) mode before boot paints data-driven screens. Native
+  // and mock are already final. On a loopback origin the page could be the App's loopback host,
+  // so we confirm via /health that it is actually the Server panel; otherwise fall to loopback.
+  // On any non-loopback http(s) origin it is unambiguously the web panel — no probe.
+  async function resolveTransport() {
+    if (mode !== 'web') return mode;
+    if (couldBeLoopback && !(await probeIsServerPanel())) mode = 'loopback';
+    return mode;
+  }
+
   function start() {
-    if (!available) return;
-    if (hasWebView) {
+    if (mode === 'native') {
       window.chrome.webview.addEventListener('message', (e) => {
         const data = typeof e.data === 'string' ? e.data : JSON.stringify(e.data);
         handleInbound(data);
       });
-    } else {
+    } else if (mode === 'loopback') {
       pollLoop();
+    }
+    // web + mock have no inbound channel.
+  }
+
+  // ---- web transport: action -> REST mapping ----
+  // Every action the UI invokes through Bridge.call maps to a same-origin REST call with the
+  // session cookie. A non-2xx rejects (the UI's .catch surfaces an error); a 401 also fires
+  // the sign-in gate. Device-only actions (generateTxt / setAutoStart / getAutoStart / pair /
+  // syncNow / saveConfig) are not reachable from the browser panel — the UI hides their
+  // affordances in web mode — so they resolve to inert no-ops rather than hitting the server.
+  async function webCall(action, payload) {
+    const data = payload == null ? null : safeParse(String(payload));
+
+    const req = async (method, path, body) => {
+      const init = { method, credentials: 'include', headers: {} };
+      if (body !== undefined) {
+        init.headers['Content-Type'] = 'application/json';
+        init.body = typeof body === 'string' ? body : JSON.stringify(body);
+      }
+      const res = await fetch(path, init);
+      if (res.status === 401) { if (unauthorizedCb) unauthorizedCb(); throw new Error('unauthorized'); }
+      if (!res.ok) throw new Error(`http ${res.status}`);
+      if (res.status === 204) return null;
+      const text = await res.text();
+      return text ? safeParse(text) : null;
+    };
+
+    switch (action) {
+      case 'getStatus': {
+        // Compose an AppStatus-like object from /api/me (+ /api/pairs for an overall state)
+        // that the existing applyNativeStatus()/UI already understand.
+        const me = await req('GET', '/api/me');
+        let pairs = [];
+        try { pairs = await req('GET', '/api/pairs'); } catch (_) { pairs = []; }
+        const list = Array.isArray(pairs) ? pairs : [];
+        const active = list.filter((p) => p && p.state === 'active');
+        const status = list.length === 0 ? 'Idle'
+          : active.length === 0 ? 'Paused' : 'Idle';
+        return {
+          paired: true,                 // a signed-in panel session is the web "paired" state
+          signedIn: true,
+          email: me && me.email,
+          displayName: me && me.displayName,
+          status,
+          pairCount: list.length,
+        };
+      }
+      case 'listPairs':       return req('GET', '/api/pairs');
+      case 'createPair':      return req('POST', '/api/pairs', data);
+      case 'updatePair': {
+        // The bridge contract passes {id, ...patch}; REST patches /api/pairs/{id} with the rest.
+        const { id, ...patch } = data || {};
+        return req('PATCH', `/api/pairs/${encodeURIComponent(id)}`, patch);
+      }
+      case 'deletePair':      return req('DELETE', `/api/pairs/${encodeURIComponent(data)}`);
+      case 'runPairNow':      return req('POST', `/api/pairs/${encodeURIComponent(data)}/run`);
+      case 'listAccounts':    return req('GET', '/api/accounts');
+      case 'listCalendars':   return req('GET', `/api/accounts/${encodeURIComponent(data)}/calendars`);
+      case 'unlinkAccount':   return req('DELETE', `/api/accounts/${encodeURIComponent(data)}`);
+
+      // Device-only actions: no meaning in a browser panel. Inert (the UI hides their entry
+      // points in web mode, so these should never actually be called).
+      case 'getAutoStart':    return { enabled: false };
+      case 'setAutoStart':
+      case 'generateTxt':
+      case 'saveConfig':
+      case 'pair':
+      case 'syncNow':         return null;
+
+      default: throw new Error(`web transport: unmapped action "${action}"`);
     }
   }
 
   function call(action, payload, timeoutMs) {
-    if (!available) return Promise.reject(new Error('no bridge'));
+    if (mode === 'web') return webCall(action, payload);
+    if (mode === 'mock') return Promise.reject(new Error('no bridge'));
+    // native / loopback: correlationId request-reply over the message channel.
     const correlationId = newId();
     return new Promise((resolve, reject) => {
       pending.set(correlationId, { resolve, reject });
@@ -125,14 +241,20 @@ const Bridge = (() => {
     });
   }
 
-  // Fire-and-forget window controls. Only meaningful in the native shell; inert in a browser.
-  function windowAction(action) { if (hasWebView) send({ action }); }
+  // Fire-and-forget window controls. Only meaningful in the native shell; inert elsewhere.
+  function windowAction(action) { if (mode === 'native') send({ action }); }
 
   return {
-    get available() { return available; },
-    get nativeShell() { return !!hasWebView; },
-    start, call, windowAction,
+    // available — the UI has a real data backend (any non-mock transport).
+    get available() { return mode !== 'mock'; },
+    get nativeShell() { return mode === 'native'; },
+    // webPanel — the browser panel (mode 3). The UI uses this to hide device-only affordances
+    // and to apply the sign-in gate, both of which are panel-only concerns.
+    get webPanel() { return mode === 'web'; },
+    get mode() { return mode; },
+    resolveTransport, start, call, windowAction,
     onStatus(cb) { statusCb = cb; },
+    onUnauthorized(cb) { unauthorizedCb = cb; },
   };
 })();
 
@@ -272,9 +394,14 @@ const live = {
   accounts: null,    // [AccountInfo] from listAccounts
   calendars: {},     // accountRef -> [CalendarInfo]
   autoStart: null,   // bool from getAutoStart
+  me: null,          // { email, displayName } from getStatus/api/me (web panel)
   loadedPairs: false,
   loadingPairs: false,
 };
+
+// Web panel sign-in gate state. Only consulted in web mode (Bridge.webPanel). signedIn flips
+// true once getStatus resolves; a 401 from any web call flips it false and shows the gate.
+const webAuth = { resolved: false, signedIn: false };
 
 async function loadPairs() {
   if (!Bridge.available) { live.pairs = null; return PAIRS; }
@@ -923,6 +1050,15 @@ function renderConfig(root) {
   const row = (label, hint, control) => el('div', { class: 'cfg-row' },
     el('div', null, el('div', { class: 'cfg-row__label', text: label }), hint), control);
 
+  // Account (web panel only): show the signed-in identity and a sign-out affordance. The
+  // identity comes from /api/me via getStatus; we cache it on live.me at boot.
+  if (Bridge.webPanel) {
+    const email = (live.me && live.me.email) || 'Signed in';
+    const signOutBtn = el('button', { class: 'btn btn--ghost', style: 'color:var(--err)', text: 'Sign out', onclick: () => signOutWeb() });
+    root.append(section('Account',
+      row('Signed in as', el('div', { class: 'cfg-row__hint', text: email }), signOutBtn)));
+  }
+
   // Calendar
   const targetSel = el('select', { class: 'field-select' });
   ['Work · Calendar', 'Personal · Family', '+ Create new…'].forEach((o) => targetSel.append(el('option', { text: o })));
@@ -931,43 +1067,58 @@ function renderConfig(root) {
     row('Target calendar', el('div', { class: 'cfg-row__hint', text: 'Where mirrored events are written' }), targetSel),
     sliderRow('Sync window', () => settings.windowDays, (v) => { settings.windowDays = v; pushConfig(); })));
 
-  // Schedule. Run-at-startup is backed by the host's auto-start manager when bridged.
-  const startupToggle = toggle(
-    () => (Bridge.available && live.autoStart !== null) ? live.autoStart : settings.startup,
-    (v) => {
-      settings.startup = v;
-      if (Bridge.available) {
-        live.autoStart = v;
-        Bridge.call('setAutoStart', v ? 'true' : 'false').catch(() => {});
-      }
-    });
-  if (Bridge.available && live.autoStart === null) {
-    Bridge.call('getAutoStart').then((r) => { live.autoStart = !!(r && r.enabled); if (state.view === 'config') rerender(); }).catch(() => {});
-  }
-  root.append(section('Schedule',
+  // Schedule. Run-at-startup is backed by the host's auto-start manager when bridged. It is a
+  // device-only concern (a browser can't launch on OS sign-in), so the row is hidden in the
+  // web panel; auto-sync + interval still show as plain preferences.
+  const scheduleRows = [
     row('Auto-sync', el('div', { class: 'cfg-row__hint', text: 'Mirror changes automatically' }), toggle(() => settings.autoSync, (v) => { settings.autoSync = v; })),
     intervalRow(() => settings.interval, (v) => { settings.interval = v; pushConfig(); rerender(); }),
-    row('Run at startup', el('div', { class: 'cfg-row__hint', text: 'Launch Zync Master when you sign in' }), startupToggle)));
+  ];
+  if (!Bridge.webPanel) {
+    // Run-at-startup is backed by the host's auto-start manager (native/loopback only).
+    const startupToggle = toggle(
+      () => (Bridge.available && live.autoStart !== null) ? live.autoStart : settings.startup,
+      (v) => {
+        settings.startup = v;
+        if (Bridge.available) {
+          live.autoStart = v;
+          Bridge.call('setAutoStart', v ? 'true' : 'false').catch(() => {});
+        }
+      });
+    if (Bridge.available && live.autoStart === null) {
+      Bridge.call('getAutoStart').then((r) => { live.autoStart = !!(r && r.enabled); if (state.view === 'config') rerender(); }).catch(() => {});
+    }
+    scheduleRows.push(row('Run at startup', el('div', { class: 'cfg-row__hint', text: 'Launch Zync Master when you sign in' }), startupToggle));
+  }
+  root.append(section('Schedule', ...scheduleRows));
 
-  // Tools: basic .txt export + unlink the connected Microsoft account (native shell only).
+  // Tools. The .txt export is a device-only capability (writes a local file via Outlook COM),
+  // so it is hidden in the web panel; unlinking the Microsoft account works over REST and is
+  // offered in any non-mock transport.
   if (Bridge.available) {
-    const txtBtn = el('button', { class: 'btn btn--ghost', onclick: () => generateBasicTxt(txtBtn) }, iconEl('folder', 13, 1.6), el('span', { text: 'Generate .txt' }));
+    const toolRows = [];
+    if (!Bridge.webPanel) {
+      const txtBtn = el('button', { class: 'btn btn--ghost', onclick: () => generateBasicTxt(txtBtn) }, iconEl('folder', 13, 1.6), el('span', { text: 'Generate .txt' }));
+      toolRows.push(row('Basic .txt export', el('div', { class: 'cfg-row__hint', text: 'Save this month as a pipe-delimited text file' }), txtBtn));
+    }
     const unlinkBtn = el('button', { class: 'btn btn--ghost', style: 'color:var(--err)', onclick: () => unlinkAccount() }, el('span', { text: 'Unlink…' }));
-    root.append(section('Tools',
-      row('Basic .txt export', el('div', { class: 'cfg-row__hint', text: 'Save this month as a pipe-delimited text file' }), txtBtn),
-      row('Microsoft account', el('div', { class: 'cfg-row__hint', text: 'Disconnect and disable its sync pairs' }), unlinkBtn)));
+    toolRows.push(row('Microsoft account', el('div', { class: 'cfg-row__hint', text: 'Disconnect and disable its sync pairs' }), unlinkBtn));
+    root.append(section('Tools', ...toolRows));
   }
 
-  // This device
-  const nameInput = el('input', { class: 'field-input', value: settings.deviceName });
-  nameInput.addEventListener('input', () => { settings.deviceName = nameInput.value; });
-  nameInput.addEventListener('change', pushConfig);
-  root.append(section('This device',
-    row('Device name', el('div', { class: 'cfg-row__hint', text: 'Visible to your other devices' }), nameInput),
-    row('Pairing key',
-      el('div', { class: 'cfg-row__hint' }, el('span', { class: 'chip chip--ok', style: 'margin-right:6px' }, iconEl('check', 9, 2.4), 'Paired'),
-        el('span', { class: 'num', style: 'color:var(--ink-2)', text: '•••• 3f2a' })),
-      el('button', { class: 'btn btn--ghost', style: 'color:var(--err)', text: 'Unpair…', onclick: () => { state.sync = 'unpaired'; pushConfig(); rerender(); } }))));
+  // This device — device identity + the device's own pairing key. Device-only: a browser panel
+  // is not a paired device, so the whole section is hidden in the web panel.
+  if (!Bridge.webPanel) {
+    const nameInput = el('input', { class: 'field-input', value: settings.deviceName });
+    nameInput.addEventListener('input', () => { settings.deviceName = nameInput.value; });
+    nameInput.addEventListener('change', pushConfig);
+    root.append(section('This device',
+      row('Device name', el('div', { class: 'cfg-row__hint', text: 'Visible to your other devices' }), nameInput),
+      row('Pairing key',
+        el('div', { class: 'cfg-row__hint' }, el('span', { class: 'chip chip--ok', style: 'margin-right:6px' }, iconEl('check', 9, 2.4), 'Paired'),
+          el('span', { class: 'num', style: 'color:var(--ink-2)', text: '•••• 3f2a' })),
+        el('button', { class: 'btn btn--ghost', style: 'color:var(--err)', text: 'Unpair…', onclick: () => { state.sync = 'unpaired'; pushConfig(); rerender(); } }))));
+  }
 
   // Appearance — Dark / Light / Auto (Auto follows the OS)
   const seg = el('div', { class: 'segmented' });
@@ -985,6 +1136,34 @@ function renderConfig(root) {
     el('span', { class: 'num', style: 'font-size:11px;color:var(--ink-3);margin-right:4px', text: VERSION }),
     el('span', { style: 'transform:rotate(180deg);color:var(--ink-3);display:inline-flex', html: icon('chevronleft', { size: 14, stroke: 1.8 }) }));
   root.append(el('div', { class: 'glass glass--card config-section' }, el('div', { class: 'config-section__hd', text: 'About' }), aboutRow));
+}
+
+// ---------------- Screen: Sign in (web panel gate) ----------------
+// Shown only in web mode when /api/me reported 401. The button starts the server's OAuth
+// flow; after the callback signs in the cookie and redirects to returnTo=/, the panel reloads
+// authenticated and the gate clears. Styled with the existing glass tokens.
+function renderSignIn(root) {
+  const card = el('div', { class: 'glass glass--card pair-card', style: 'margin-top:14px' },
+    el('div', { class: 'about-logo', style: 'margin:4px auto 0', html: logoSvg({ size: 56 }) }),
+    el('div', { class: 'pair-title', text: 'Sign in to Zync Master' }),
+    el('div', { class: 'pair-sub', text: 'Connect your Microsoft account to manage your calendar sync pairs from the web panel.' }),
+    el('button', { class: 'btn btn--primary', style: 'align-self:stretch',
+      onclick: () => { window.location.href = '/connect?returnTo=/'; } },
+      el('div', { class: 'provider-tile__logo', dataset: { tone: 'azure' }, style: 'width:18px;height:18px;border-radius:5px;font-size:11px', text: 'M' }),
+      el('span', { text: 'Sign in with Microsoft' })));
+  root.append(card);
+}
+
+// signOutWeb — clears the panel session cookie on the server and returns to the sign-in gate.
+function signOutWeb() {
+  fetch('/signout', { method: 'POST', credentials: 'include' })
+    .catch(() => {})
+    .finally(() => {
+      webAuth.signedIn = false;
+      live.me = null;
+      state.view = 'home';
+      rerender();
+    });
 }
 
 // ---------------- Screen: About ----------------
@@ -1157,6 +1336,11 @@ function unlinkAccount() {
 // Translate a native AppStatus into the view-model state the renderer drives.
 function applyNativeStatus(s) {
   if (!s) return;
+  // Web panel: getStatus carries the signed-in identity; capture it for the gate + Settings.
+  if (Bridge.webPanel && s.signedIn) {
+    webAuth.signedIn = true;
+    live.me = { email: s.email, displayName: s.displayName };
+  }
   if (!s.paired) state.sync = 'unpaired';
   else if (s.status === 'Error') state.sync = 'error';
   else if (s.status === 'Offline') state.sync = 'offline';
@@ -1176,16 +1360,23 @@ const NAV = [
 // Map sub-routes back to a parent tab so the indicator follows the user.
 const TAB_MAP = { home: 'home', calendar: 'home', 'add-pair': 'home', 'add-calendar': 'home', config: 'config', about: 'config', pairing: 'pairing' };
 
+// The visible tabs. "Pair" is device self-pairing — meaningless in the browser panel — so it
+// is dropped in web mode. The pairing screen is gated separately in navigate().
+function navItems() {
+  return Bridge.webPanel ? NAV.filter((i) => i.id !== 'pairing') : NAV;
+}
+
 function renderNav() {
   const nav = $('#navbar');
   if (!nav) return;
+  const items = navItems();
   const currentTab = TAB_MAP[state.view] || 'home';
-  const activeIndex = Math.max(0, NAV.findIndex((i) => i.id === currentTab));
-  nav.style.setProperty('--nav-count', String(NAV.length));
+  const activeIndex = Math.max(0, items.findIndex((i) => i.id === currentTab));
+  nav.style.setProperty('--nav-count', String(items.length));
   nav.style.setProperty('--nav-idx', String(activeIndex));
   nav.replaceChildren();
   nav.append(el('span', { class: 'navbar__indicator' }));
-  NAV.forEach((it) => {
+  items.forEach((it) => {
     const active = it.id === currentTab;
     nav.append(el('button', { class: 'nav-item', 'aria-current': String(active), onclick: () => navigate(it.id) },
       iconEl(it.icon, 15, 1.7), el('span', { text: it.label })));
@@ -1198,6 +1389,20 @@ function rerender() {
   if (!root) return;
   root.replaceChildren();
   root.classList.remove('enter');
+
+  // Web panel sign-in gate: until the session resolves as signed-in, the only screen is the
+  // sign-in card and the bottom nav is hidden. Other transports gate themselves (pairing).
+  if (Bridge.webPanel && webAuth.resolved && !webAuth.signedIn) {
+    renderSignIn(root);
+    const nav = $('#navbar');
+    if (nav) { nav.replaceChildren(); nav.hidden = true; }
+    void root.offsetWidth;
+    root.classList.add('enter');
+    return;
+  }
+  const nav = $('#navbar');
+  if (nav) nav.hidden = false;
+
   switch (state.view) {
     case 'home': renderHome(root); break;
     case 'calendar': renderCalendar(root); break;
@@ -1225,6 +1430,8 @@ function rerenderInPlace() {
 }
 
 function navigate(view) {
+  // Device self-pairing has no meaning in the browser panel; bounce it to Settings.
+  if (view === 'pairing' && Bridge.webPanel) view = 'config';
   state.view = view;
   rerender();
 }
@@ -1285,11 +1492,19 @@ function playLaunch() {
 }
 
 // ---------------- Boot ----------------
-function boot() {
+async function boot() {
   hydrateIcons();
   applyTheme(storedTheme());
   wireTitlebar();
   const tag = $('#pausedTag'); if (tag) tag.hidden = true;
+
+  // Settle the http(s) transport (web vs the App's loopback host) before the first
+  // data-driven paint. Native + mock resolve synchronously; this only awaits the probe.
+  await Bridge.resolveTransport();
+  document.documentElement.setAttribute('data-transport', Bridge.mode);
+
+  // Web panel: a 401 from any call drops us back to the sign-in gate.
+  if (Bridge.webPanel) Bridge.onUnauthorized(() => { webAuth.resolved = true; webAuth.signedIn = false; rerender(); });
 
   if (Bridge.available) {
     Bridge.start();
@@ -1297,8 +1512,12 @@ function boot() {
     // Dismiss the splash shortly after the first status settles (with a small floor) so the
     // app feels instant when the host responds quickly, instead of a fixed long hold.
     Bridge.call('getStatus')
-      .then((s) => applyNativeStatus(s))
-      .catch(() => {})
+      .then((s) => { applyNativeStatus(s); if (Bridge.webPanel) { webAuth.resolved = true; rerender(); } })
+      .catch(() => {
+        // In the web panel a failed getStatus (typically 401) is the unauthenticated state:
+        // resolve the gate so the sign-in screen shows instead of an empty dashboard.
+        if (Bridge.webPanel) { webAuth.resolved = true; webAuth.signedIn = false; rerender(); }
+      })
       .finally(() => setTimeout(dismissLaunch, 450));
   }
 
