@@ -1029,12 +1029,23 @@
 }
 
 /* =========================================================
-   NATIVE-SHELL — fill the OS window, no centered mockup
+   FULL-VIEWPORT — fill the surface, no centered mockup card.
+   Applies to the desktop App (native-shell) AND the served browser panel
+   ([data-transport="web"]): a centered fixed card pushed the bottom nav below
+   the fold and made the page (not the inner .view) scroll/bounce. Filling the
+   viewport makes the navbar always visible and confines scrolling to .view.
    ========================================================= */
-.native-shell .stage { padding: 0; background: none; }
-.native-shell .win {
+.native-shell .stage,
+:root[data-transport="web"] .stage { padding: 0; background: none; }
+.native-shell .win,
+:root[data-transport="web"] .win {
   width: 100%; height: 100vh;
+  height: 100dvh;
   max-width: none; max-height: 100vh;
+  max-height: 100dvh;
   border-radius: 0;
   box-shadow: none;
 }
+/* Belt-and-suspenders: never let the page itself scroll in the web panel —
+   the inner .view is the only scroll container, which kills the bounce-to-top. */
+:root[data-transport="web"], :root[data-transport="web"] body { height: 100%; overflow: hidden; overscroll-behavior: none; }
