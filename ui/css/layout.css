@@ -1049,3 +1049,26 @@
 /* Belt-and-suspenders: never let the page itself scroll in the web panel —
    the inner .view is the only scroll container, which kills the bounce-to-top. */
 :root[data-transport="web"], :root[data-transport="web"] body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+
+/* =========================================================
+   WEB PANEL — bottom nav IN-FLOW (not absolute).
+   In the browser the absolutely-positioned navbar (bottom:6px of .win__body) sat
+   below the fold whenever its entrance transform was mid-flight or a re-render
+   restarted it, so it was effectively invisible and the bottom of the screen got
+   clipped. Making it a normal flex child at the end of the column guarantees it is
+   always inside the viewport and that .view gets exactly the space above it. The
+   App (native-shell) keeps the absolute navbar — it works there and we don't touch it.
+   ========================================================= */
+:root[data-transport="web"] .view {
+  flex: 1 1 auto;
+  min-height: 0;          /* allow the flex item to shrink so overflow-y:auto actually scrolls */
+  padding-bottom: 14px;   /* navbar no longer overlaps the view, so drop the 60px reserve */
+}
+:root[data-transport="web"] .navbar {
+  position: static;
+  flex: 0 0 auto;
+  margin: 0 14px 8px;
+  animation: nav-fade-in 420ms ease backwards 180ms;  /* opacity-only: can never push itself below the fold */
+}
+:root[data-transport="web"] .navbar[hidden] { display: none; }
+@keyframes nav-fade-in { from { opacity: 0; } to { opacity: 1; } }

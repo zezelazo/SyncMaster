@@ -371,6 +371,7 @@ const live = {
   me: null,          // { email, displayName } from getStatus/api/me (web panel)
   loadedPairs: false,
   loadingPairs: false,
+  pairsAttempted: false,  // web panel: home auto-loads pairs at most once (a 401 must not loop)
 };
 
 // Web panel sign-in gate state. Only consulted in web mode (Bridge.webPanel). signedIn flips
@@ -560,7 +561,8 @@ function renderHome(root) {
 
   // Browser panel: ensure the pairs snapshot the stats above derive from is actually loaded,
   // and repaint once it lands (the first home paint may precede any pairs fetch).
-  if (Bridge.webPanel && !live.loadedPairs && !live.loadingPairs) {
+  if (Bridge.webPanel && !live.loadedPairs && !live.loadingPairs && !live.pairsAttempted) {
+    live.pairsAttempted = true;  // fire once; rerenderInPlace below must not re-trigger this on a 401
     loadPairs().then(() => { if (state.view === 'home') rerenderInPlace(); });
   }
 
@@ -1443,8 +1445,10 @@ function rerenderInPlace() {
   if (state.view !== 'calendar' && state.view !== 'home') return;
   const root = $('#view');
   if (!root) return;
+  const prevScroll = root.scrollTop;   // a tick/refresh repaint must not snap the user back to the top
   root.replaceChildren();
   if (state.view === 'calendar') renderCalendar(root); else renderHome(root);
+  root.scrollTop = prevScroll;
   renderNav();
 }
 
