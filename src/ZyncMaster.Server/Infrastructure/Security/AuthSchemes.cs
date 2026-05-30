@@ -39,4 +39,14 @@ public static class AuthSchemes
     public static TBuilder RequireCookie<TBuilder>(this TBuilder builder)
         where TBuilder : IEndpointConventionBuilder =>
         (TBuilder)builder.RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = Cookie });
+
+    // Accepts EITHER scheme. The browser panel authenticates with the Cookie scheme while
+    // a device authenticates with the ApiKey scheme; both set the "userId" claim that
+    // HttpContextCurrentUserAccessor resolves, and the handlers load data user-scoped, so a
+    // route exposed to both schemes is safe. Used by /api/pairs/{id}/run, which the panel's
+    // per-pair "Sync now" button calls under the cookie while devices call it under the key.
+    public static TBuilder RequireCookieOrApiKey<TBuilder>(this TBuilder builder)
+        where TBuilder : IEndpointConventionBuilder =>
+        (TBuilder)builder.RequireAuthorization(
+            new AuthorizeAttribute { AuthenticationSchemes = $"{Cookie},{ApiKey}" });
 }

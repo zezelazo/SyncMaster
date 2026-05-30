@@ -10,6 +10,7 @@
 // data — or, in the native shell, the host-supplied status — changed.
 
 import { icon, logoSvg, hydrateIcons } from './icons.js';
+import { webRequestFor, statusFromPairs } from './web-transport.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -181,50 +182,23 @@ const Bridge = (() => {
       return text ? safeParse(text) : null;
     };
 
-    switch (action) {
-      case 'getStatus': {
-        // Compose an AppStatus-like object from /api/me (+ /api/pairs for an overall state)
-        // that the existing applyNativeStatus()/UI already understand.
-        const me = await req('GET', '/api/me');
-        let pairs = [];
-        try { pairs = await req('GET', '/api/pairs'); } catch (_) { pairs = []; }
-        const list = Array.isArray(pairs) ? pairs : [];
-        const active = list.filter((p) => p && p.state === 'active');
-        const status = list.length === 0 ? 'Idle'
-          : active.length === 0 ? 'Paused' : 'Idle';
-        return {
-          paired: true,                 // a signed-in panel session is the web "paired" state
-          signedIn: true,
-          email: me && me.email,
-          displayName: me && me.displayName,
-          status,
-          pairCount: list.length,
-        };
-      }
-      case 'listPairs':       return req('GET', '/api/pairs');
-      case 'createPair':      return req('POST', '/api/pairs', data);
-      case 'updatePair': {
-        // The bridge contract passes {id, ...patch}; REST patches /api/pairs/{id} with the rest.
-        const { id, ...patch } = data || {};
-        return req('PATCH', `/api/pairs/${encodeURIComponent(id)}`, patch);
-      }
-      case 'deletePair':      return req('DELETE', `/api/pairs/${encodeURIComponent(data)}`);
-      case 'runPairNow':      return req('POST', `/api/pairs/${encodeURIComponent(data)}/run`);
-      case 'listAccounts':    return req('GET', '/api/accounts');
-      case 'listCalendars':   return req('GET', `/api/accounts/${encodeURIComponent(data)}/calendars`);
-      case 'unlinkAccount':   return req('DELETE', `/api/accounts/${encodeURIComponent(data)}`);
-
-      // Device-only actions: no meaning in a browser panel. Inert (the UI hides their entry
-      // points in web mode, so these should never actually be called).
-      case 'getAutoStart':    return { enabled: false };
-      case 'setAutoStart':
-      case 'generateTxt':
-      case 'saveConfig':
-      case 'pair':
-      case 'syncNow':         return null;
-
-      default: throw new Error(`web transport: unmapped action "${action}"`);
+    // getStatus is composite: compose an AppStatus-like object from /api/me (+ /api/pairs for
+    // an overall state) that the existing applyNativeStatus()/UI already understand.
+    if (action === 'getStatus') {
+      const me = await req('GET', '/api/me');
+      let pairs = [];
+      try { pairs = await req('GET', '/api/pairs'); } catch (_) { pairs = []; }
+      return statusFromPairs(me, pairs);
     }
+
+    // Everything else maps through the pure action->REST table. A null mapping is a device-
+    // only action that is inert in the browser panel (getAutoStart reports disabled; the
+    // rest are no-ops) — the UI hides their entry points in web mode anyway.
+    const mapped = webRequestFor(action, data);
+    if (mapped === null) {
+      return action === 'getAutoStart' ? { enabled: false } : null;
+    }
+    return req(mapped.method, mapped.path, mapped.body);
   }
 
   function call(action, payload, timeoutMs) {
@@ -511,6 +485,30 @@ function activityRow(row) {
   );
 }
 
+// Real dashboard stats for the browser panel, derived from the pairs the panel already
+// loads. "Items synced" sums created+updated+deleted across each pair's lastResult; "Sync
+// runs" counts pairs that have a recorded run. The server's MirrorResult exposes no failure
+// count, so "Conflicts" has no real value to show: it renders an em-dash placeholder rather
+// than a fabricated 0. Until the pairs snapshot has loaded, every cell is an em-dash.
+function webPanelHomeStats() {
+  const dash = '—';
+  if (!live.loadedPairs) return { items: dash, runs: dash, conflicts: dash };
+  const pairs = live.pairs || [];
+  let items = 0, runs = 0;
+  pairs.forEach((p) => {
+    const lr = p && p.lastResult;
+    if (lr) {
+      runs += 1;
+      items += (lr.created || 0) + (lr.updated || 0) + (lr.deleted || 0);
+    }
+  });
+  return {
+    items: items.toLocaleString(),
+    runs: String(runs),
+    conflicts: dash,
+  };
+}
+
 // ---------------- Screen: Home ----------------
 function renderHome(root) {
   const cfg = STATUS[state.sync];
@@ -526,26 +524,45 @@ function renderHome(root) {
     el('div', { class: 'stat__val num', text: val }),
     el('div', { class: 'stat__lab', text: lab }),
   );
+
+  // In the browser panel we must never show fabricated demo numbers to a real signed-in
+  // user. Derive the dashboard stats from the real pairs the panel already loads; where no
+  // real value exists yet (snapshot not loaded) fall back to an em-dash placeholder. The
+  // literal 1,248 / 24 / 0 demo numbers are kept ONLY for the standalone mock (file://) demo.
+  const homeStats = Bridge.webPanel ? webPanelHomeStats() : { items: '1,248', runs: '24', conflicts: '0' };
+
   root.append(el('div', { class: 'glass glass--card stats-card' },
     el('div', { class: 'stats-card__hd' },
       el('span', { class: 'status-dot', dataset: { state: cfg.dot } }),
       el('span', { class: 'stats-card__status', text: statusLabel }),
-      el('span', { class: 'stats-card__sub', text: 'THIS WEEK' }),
+      el('span', { class: 'stats-card__sub', text: Bridge.webPanel ? 'LAST RUN' : 'THIS WEEK' }),
     ),
     el('div', { class: 'stats-grid' },
-      stat('1,248', 'Items synced'),
+      stat(homeStats.items, 'Items synced'),
       el('div', { class: 'stat__sep' }),
-      stat('24', 'Sync runs'),
+      stat(homeStats.runs, 'Sync runs'),
       el('div', { class: 'stat__sep' }),
-      stat('0', 'Conflicts'),
+      stat(homeStats.conflicts, 'Conflicts'),
     ),
   ));
 
+  // Modules summary line: "N active · M available". In the web panel, N is the count of
+  // active real pairs; M stays the catalog size (the single Calendar module is the only one
+  // shipped today, so "available" mirrors the demo's catalog count). Mock keeps its demo line.
+  const moduleActive = Bridge.webPanel
+    ? String((live.pairs || []).filter((p) => p && p.state === 'active').length)
+    : '1';
   root.append(el('div', { class: 'section-head' },
     el('span', { class: 'section-head__title', text: 'Sync modules' }),
     el('span', { class: 'section-head__action', style: 'pointer-events:none;color:var(--ink-3)' },
-      el('span', { class: 'num', text: '1' }), ' active · ', el('span', { class: 'num', text: '5' }), ' available'),
+      el('span', { class: 'num', text: moduleActive }), ' active · ', el('span', { class: 'num', text: '5' }), ' available'),
   ));
+
+  // Browser panel: ensure the pairs snapshot the stats above derive from is actually loaded,
+  // and repaint once it lands (the first home paint may precede any pairs fetch).
+  if (Bridge.webPanel && !live.loadedPairs && !live.loadingPairs) {
+    loadPairs().then(() => { if (state.view === 'home') rerenderInPlace(); });
+  }
 
   const grid = el('div', { class: 'module-grid' });
   MODULES.forEach((m) => {
